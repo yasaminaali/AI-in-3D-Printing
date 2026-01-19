@@ -566,6 +566,9 @@ def run_sa(
         plt.pause(pause_seconds)
         plt.ioff()
         plt.show()
+    
+    # Return best cost and empty ops list (for consistency with SA.py)
+    return best_cost, []
 
 
 # ============================================================

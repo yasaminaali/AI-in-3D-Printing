@@ -21,9 +21,9 @@ def check_dependencies():
     for pkg in required:
         try:
             __import__(pkg)
-            print(f"✓ {pkg} found")
+            print(f"[OK] {pkg} found")
         except ImportError:
-            print(f"✗ {pkg} missing")
+            print(f"[ERROR] {pkg} missing")
             missing.append(pkg)
     
     if missing:
@@ -35,11 +35,11 @@ def check_dependencies():
     import torch
     if torch.cuda.is_available():
         gpu_name = torch.cuda.get_device_name(0)
-        print(f"\n✓ GPU detected: {gpu_name}")
+        print(f"\n[OK] GPU detected: {gpu_name}")
         print(f"  CUDA version: {torch.version.cuda}")
         print(f"  Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.2f} GB")
     else:
-        print("\n⚠ No GPU detected - will use CPU (slower)")
+        print("\n[WARNING] No GPU detected - will use CPU (slower)")
     
     print("=" * 60)
     return True
@@ -61,16 +61,16 @@ def collect_data(args):
     os.makedirs("Dataset/features", exist_ok=True)
     
     if args.skip_collection:
-        print("\n⏭ Skipping data collection (--skip-collection flag set)")
+        print("\n[SKIP] Skipping data collection (--skip-collection flag set)")
         
         # Check if dataset exists
         if not os.path.exists("Dataset/states.csv") or not os.path.exists("Dataset/actions.csv"):
-            print("\n⚠ Warning: Dataset files not found!")
+            print("\n[WARNING] Warning: Dataset files not found!")
             print("  Expected: Dataset/states.csv and Dataset/actions.csv")
             print("  Run without --skip-collection to generate data.")
             return False
         else:
-            print("✓ Found existing dataset files")
+            print("[OK] Found existing dataset files")
             return True
     
     print("\nStarting QUICK TEST data collection with Simulated Annealing...")
@@ -83,10 +83,10 @@ def collect_data(args):
     try:
         # Import and run data collection
         import Collect_SA_quick
-        print("\n✓ Data collection completed successfully!")
+        print("\n[OK] Data collection completed successfully!")
         return True
     except Exception as e:
-        print(f"\n✗ Error during data collection: {e}")
+        print(f"\n[ERROR] Error during data collection: {e}")
         import traceback
         traceback.print_exc()
         return False
@@ -105,7 +105,7 @@ def train_model(args):
     
     # Check if dataset exists
     if not os.path.exists("Dataset/states.csv") or not os.path.exists("Dataset/actions.csv"):
-        print("\n✗ Error: Training data not found!")
+        print("\n[ERROR] Error: Training data not found!")
         print("  Run data collection first (remove --skip-collection flag)")
         return False
     
@@ -130,10 +130,10 @@ def train_model(args):
         # Run training
         os.system(f'"{sys.executable}" CNN+RNN.py')
         print("-" * 60)
-        print("\n✓ Training completed!")
+        print("\n[OK] Training completed!")
         return True
     except Exception as e:
-        print(f"\n✗ Error during training: {e}")
+        print(f"\n[ERROR] Error during training: {e}")
         import traceback
         traceback.print_exc()
         return False
@@ -171,7 +171,7 @@ def main():
     
     # Check dependencies
     if not check_dependencies():
-        print("\n✗ Dependency check failed. Please install requirements.")
+        print("\n[ERROR] Dependency check failed. Please install requirements.")
         sys.exit(1)
     
     success = True
@@ -179,13 +179,13 @@ def main():
     # Phase 1: Data Collection
     if not args.train_only:
         if not collect_data(args):
-            print("\n✗ Pipeline failed at data collection phase")
+            print("\n[ERROR] Pipeline failed at data collection phase")
             success = False
     
     # Phase 2: Training
     if success and not args.collect_only:
         if not train_model(args):
-            print("\n✗ Pipeline failed at training phase")
+            print("\n[ERROR] Pipeline failed at training phase")
             success = False
     
     # Summary
@@ -195,9 +195,9 @@ def main():
     print("=" * 60)
     
     if success:
-        print(f"✓ All phases completed successfully!")
+        print(f"[OK] All phases completed successfully!")
     else:
-        print(f"✗ Pipeline encountered errors")
+        print(f"[ERROR] Pipeline encountered errors")
     
     print(f"\nTotal execution time: {elapsed/60:.2f} minutes")
     print("=" * 60)

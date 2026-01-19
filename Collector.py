@@ -76,11 +76,11 @@ class ZoningCollector:
         if not os.path.exists(self.actions_csv):
             with open(self.actions_csv, "w", newline="") as f:
                 w = csv.writer(f)
-                w.writerow([f.name for f in ActionRow.__dataclass_fields__.keys()])
+                w.writerow(list(ActionRow.__dataclass_fields__.keys()))
         if not os.path.exists(self.states_csv):
             with open(self.states_csv, "w", newline="") as f:
                 w = csv.writer(f)
-                w.writerow([f.name for f in StateRow.__dataclass_fields__.keys()])       
+                w.writerow(list(StateRow.__dataclass_fields__.keys()))       
 
     # helpers
     def IDGenerator(self, b: bytes) -> str:
