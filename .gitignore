@@ -38,6 +38,7 @@ venv.bak/
 # Dataset and outputs
 Dataset/
 dataset/
+models/
 *.npz
 *.csv
 top10_plots/

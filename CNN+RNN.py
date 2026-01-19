@@ -540,8 +540,22 @@ def evaluate_seq_model(
 # Main
 
 def main():
-    states_csv = os.path.join("Dataset2", "states.csv")
-    actions_csv = os.path.join("Dataset2", "actions.csv")
+    # GPU detection and setup
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print("=" * 60)
+    print("Device Configuration")
+    print("=" * 60)
+    if device == "cuda":
+        print(f"Using GPU: {torch.cuda.get_device_name(0)}")
+        print(f"CUDA Version: {torch.version.cuda}")
+        print(f"Available Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.2f} GB")
+    else:
+        print("Using CPU (GPU not available)")
+    print("=" * 60)
+    print()
+    
+    states_csv = os.path.join("Dataset", "states.csv")
+    actions_csv = os.path.join("Dataset", "actions.csv")
 
     # Action metadata
     meta = scan_action_metadata(actions_csv)
@@ -627,8 +641,8 @@ def main():
         collate_fn=sequence_batch
     )
 
-    # Build model
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    # Build model (device already set earlier)
+    print(f"\n[Model] Building CNN+RNN on {device.upper()}...")
     model = CNN_RNN(
         in_channels=in_channels,
         cfg_dim=cfg_dim,
@@ -636,6 +650,7 @@ def main():
         n_sg=len(subgrid_kinds),
         n_ori=len(orientations),
     )
+    print(f"[Model] Total parameters: {sum(p.numel() for p in model.parameters()):,}")
 
     # Train
     train_seq_model(
