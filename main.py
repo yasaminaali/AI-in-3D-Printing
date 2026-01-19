@@ -52,8 +52,8 @@ def collect_data(args):
     print("=" * 60)
     
     # Check if Collect_SA.py exists
-    if not os.path.exists("Collect_SA.py"):
-        print("Error: Collect_SA.py not found!")
+    if not os.path.exists("Collect_SA_quick.py"):
+        print("Error: Collect_SA_quick.py not found!")
         return False
     
     # Create Dataset directory if it doesn't exist
@@ -73,16 +73,16 @@ def collect_data(args):
             print("✓ Found existing dataset files")
             return True
     
-    print("\nStarting data collection with Simulated Annealing...")
+    print("\nStarting QUICK TEST data collection with Simulated Annealing...")
     print(f"Configuration:")
-    print(f"  - Grid sizes: Various (configured in Collect_SA.py)")
-    print(f"  - Zone patterns: islands, diagonal, stripes, voronoi, etc.")
+    print(f"  - Grid sizes: 10x10, 15x15")
+    print(f"  - Zone patterns: left_right, diagonal")
     print(f"  - Output directory: Dataset/")
-    print(f"\nThis may take several minutes to hours depending on configuration...")
+    print(f"\nThis should take a few minutes...")
     
     try:
         # Import and run data collection
-        import Collect_SA
+        import Collect_SA_quick
         print("\n✓ Data collection completed successfully!")
         return True
     except Exception as e:
