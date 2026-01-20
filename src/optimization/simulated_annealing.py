@@ -1,18 +1,32 @@
-# Left and right zones
+"""
+Simulated Annealing optimization for Hamiltonian path zone crossing minimization.
+
+This module implements SA with:
+- Dynamic temperature scheduling using sigmoid function
+- Move pool system for efficient valid move exploration
+- Reheating mechanism to escape local minima
+- Integration with data collection system
+"""
+
 import random
 import math
 import time
 import matplotlib.pyplot as plt
 from typing import Tuple, Optional, Dict, Any, List
+import io
+import re
+import contextlib
+import statistics
 
-from Flip_Transpose2 import HamiltonianSTL
-from Collector import ZoningCollector, RunMeta
-from Collector_helper import mutate_layer_logged
+from src.core.hamiltonian import HamiltonianSTL
+from src.data.collector import ZoningCollector, RunMeta
+from src.data.collector_helper import mutate_layer_logged
 
 Point = Tuple[int, int]
 
 
 def _sigmoid_stable(z: float) -> float:
+    """Numerically stable sigmoid function."""
     if z >= 0:
         return 1.0 / (1.0 + math.exp(-z))
     ez = math.exp(z)
@@ -20,6 +34,18 @@ def _sigmoid_stable(z: float) -> float:
 
 
 def dynamic_temperature(l: int, L: int, Tmin: float, Tmax: float) -> float:
+    """
+    Compute temperature using sigmoid-based schedule.
+    
+    Args:
+        l: Current iteration
+        L: Total iterations
+        Tmin: Minimum temperature
+        Tmax: Maximum temperature
+        
+    Returns:
+        Current temperature value
+    """
     k = 10.0 / max(1.0, float(L))
     z = k * (-float(l) + float(L) / 2.0)
     s = _sigmoid_stable(z)
@@ -27,10 +53,12 @@ def dynamic_temperature(l: int, L: int, Tmin: float, Tmax: float) -> float:
 
 
 def deep_copy(H, V):
+    """Create deep copy of edge matrices."""
     return ([row[:] for row in H], [row[:] for row in V])
 
 
 def is_valid_cycle(h: HamiltonianSTL) -> bool:
+    """Check if current state is a valid Hamiltonian cycle."""
     if hasattr(h, "validate_full_path_cycle"):
         return bool(h.validate_full_path_cycle())
     if hasattr(h, "validate_full_path"):
@@ -39,11 +67,24 @@ def is_valid_cycle(h: HamiltonianSTL) -> bool:
 
 
 class HamiltonianZoningSA:
+    """
+    SA optimizer with left-right zone partitioning.
+    
+    Manages zone assignments and computes zone crossings for
+    the optimization objective.
+    
+    Attributes:
+        h: HamiltonianSTL instance
+        zones: Dictionary mapping (x, y) to zone ID
+        W: Grid width
+        Ht: Grid height
+    """
+    
     def __init__(self, h: HamiltonianSTL):
         self.h = h
         self.W, self.Ht = h.width, h.height
 
-        # Left/right zones
+        # Left/right zones (default)
         self.zones = {
             (x, y): 1 if x < self.W // 2 else 2
             for y in range(self.Ht)
@@ -51,6 +92,7 @@ class HamiltonianZoningSA:
         }
 
     def compute_crossings(self) -> int:
+        """Count edges that cross zone boundaries."""
         count = 0
 
         # Horizontal edges
@@ -72,6 +114,15 @@ class HamiltonianZoningSA:
         return count
 
     def apply_move(self, mv: Dict[str, Any]) -> bool:
+        """
+        Apply a move to the grid.
+        
+        Args:
+            mv: Move dictionary with op, variant, x, y, w, h
+            
+        Returns:
+            True if move was successfully applied
+        """
         op = mv["op"]
         variant = mv["variant"]
         x, y, w, h = mv["x"], mv["y"], mv["w"], mv["h"]
@@ -89,6 +140,7 @@ class HamiltonianZoningSA:
         return False
 
     def plot(self, title="Path"):
+        """Visualize current path with zone coloring."""
         plt.clf()
 
         # Zone background
@@ -124,6 +176,7 @@ class HamiltonianZoningSA:
 
 
 def get_layer_positions_generic(W, H, layer):
+    """Get valid positions for operations at a given layer."""
     offset = 2 * (layer - 1)
     x_min = offset
     x_max = W - 3 - offset
@@ -139,6 +192,12 @@ def get_layer_positions_generic(W, H, layer):
 
 
 class ZoningAdapterForSA:
+    """
+    Adapter to make HamiltonianZoningSA compatible with data collection.
+    
+    Wraps SA object and provides interface expected by Collector.
+    """
+    
     def __init__(self, sa_obj: HamiltonianZoningSA):
         self._sa = sa_obj
         self.h = sa_obj.h
@@ -154,6 +213,7 @@ class ZoningAdapterForSA:
 
 
 def _try_move_feasible(zoning: HamiltonianZoningSA, mv: Dict[str, Any]) -> bool:
+    """Test if a move is feasible without permanently applying it."""
     h = zoning.h
     H0, V0 = deep_copy(h.H, h.V)
 
@@ -174,6 +234,18 @@ def refresh_move_pool(
     boundary_band: int = 6,
     max_moves: int = 5000,
 ) -> List[Dict[str, Any]]:
+    """
+    Build a pool of feasible moves.
+    
+    Args:
+        zoning: SA object
+        bias_to_boundary: Prioritize moves near zone boundary
+        boundary_band: Width of boundary band
+        max_moves: Maximum pool size
+        
+    Returns:
+        List of feasible move dictionaries
+    """
     W, Ht = zoning.W, zoning.Ht
     pool: List[Dict[str, Any]] = []
 
@@ -193,10 +265,6 @@ def refresh_move_pool(
         for x in xs:
             if x > W - 3:
                 continue
-            if bias_to_boundary:
-                mid = W // 2
-                if abs(x - mid) > boundary_band:
-                    pass
 
             random.shuffle(tvars)
             for variant in tvars:
@@ -225,7 +293,6 @@ def refresh_move_pool(
     return pool
 
 
-# Main SA runner (with reheating + move pool)
 def run_sa(
     width: int = 32,
     height: int = 32,
@@ -236,16 +303,38 @@ def run_sa(
     plot_live: bool = True,
     show_every_accepted: int = 200,
     pause_seconds: float = 0.05,
-    dataset_dir: str = "Dataset1",
-    # SA move mechanics
-    max_move_tries: int = 25,           
-    pool_refresh_period: int = 250,     
+    dataset_dir: str = "Dataset",
+    max_move_tries: int = 25,
+    pool_refresh_period: int = 250,
     pool_max_moves: int = 5000,
-    # reheating
     reheat_patience: int = 3000,
     reheat_factor: float = 1.5,
     reheat_cap: float = 600.0,
 ):
+    """
+    Run Simulated Annealing optimization.
+    
+    Args:
+        width: Grid width
+        height: Grid height
+        iterations: Number of SA iterations
+        Tmax: Maximum temperature
+        Tmin: Minimum temperature
+        seed: Random seed
+        plot_live: Enable live plotting
+        show_every_accepted: Plot every N accepted moves
+        pause_seconds: Pause between plots
+        dataset_dir: Directory for data collection
+        max_move_tries: Max random move attempts per iteration
+        pool_refresh_period: Iterations between pool refreshes
+        pool_max_moves: Maximum pool size
+        reheat_patience: Iterations without improvement before reheat
+        reheat_factor: Temperature multiplier on reheat
+        reheat_cap: Maximum temperature after reheat
+        
+    Returns:
+        Tuple of (best_cost, best_operations_list)
+    """
     random.seed(seed)
 
     if plot_live:
@@ -255,7 +344,7 @@ def run_sa(
     zoning = HamiltonianZoningSA(h)
 
     if not is_valid_cycle(h):
-        raise RuntimeError("Initial Hamiltonian cycle invalid. Check HamiltonianSTL initialization.")
+        raise RuntimeError("Initial Hamiltonian cycle invalid.")
 
     collector = ZoningCollector(out_dir=dataset_dir, alpha=1.0, gamma=10.0)
     run_id = f"sa_{int(time.time())}"
@@ -286,13 +375,11 @@ def run_sa(
     apply_fail = 0
     rejected = 0
 
-    # Reheating state
     best_seen = best_cost
     no_improve = 0
 
     print(f"Initial crossings: {current_cost}")
 
-    # Build initial pool
     move_pool = refresh_move_pool(zoning, max_moves=pool_max_moves)
     print(f"[Pool] initial size = {len(move_pool)}")
 
@@ -303,10 +390,8 @@ def run_sa(
     for i in range(iterations):
         attempted += 1
 
-        # refresh pool periodically
         if i % pool_refresh_period == 0:
             move_pool = refresh_move_pool(zoning, max_moves=pool_max_moves)
-            # print occasionally (avoid spamming)
             if i % (pool_refresh_period * 10) == 0:
                 print(f"[Pool] iter={i} size={len(move_pool)}")
 
@@ -316,7 +401,6 @@ def run_sa(
 
         applied_move: Optional[Dict[str, Any]] = None
 
-        # Prefer sampling from pool
         if move_pool:
             mv = random.choice(move_pool)
             if zoning.apply_move(mv) and is_valid_cycle(h):
@@ -358,7 +442,6 @@ def run_sa(
             new_cost = zoning.compute_crossings()
             delta = new_cost - current_cost
 
-            # Metropolis acceptance
             if delta < 0:
                 accept = True
             else:
@@ -373,7 +456,6 @@ def run_sa(
                 current_cost = new_cost
                 accepted += 1
 
-                # Track the accepted move in the SA trajectory (for GA population)
                 accepted_ops.append({
                     "op": str(applied_move["op"]),
                     "variant": str(applied_move["variant"]),
@@ -386,15 +468,12 @@ def run_sa(
                 if new_cost < best_cost:
                     best_cost = new_cost
                     best_state = deep_copy(h.H, h.V)
-                    # Snapshot the operation sequence that produced the best state
                     best_ops = accepted_ops.copy()
 
-                # Plot occasionally
                 if plot_live and show_every_accepted > 0 and (accepted % show_every_accepted == 0):
                     zoning.plot(f"Iter {i} | T={T:.3f} | Cost={current_cost} | Best={best_cost}")
                     plt.pause(pause_seconds)
 
-                # Log the accepted move
                 layer_id = 1 if max_layer <= 1 else random.randint(1, max_layer)
                 mutate_layer_logged(
                     zoning=z_adapt,
@@ -434,11 +513,9 @@ def run_sa(
             else:
                 no_improve += 1
 
-        # Reheating
         if no_improve >= reheat_patience:
             Tmax = min(reheat_cap, Tmax * reheat_factor)
             no_improve = 0
-            # refresh pool right after reheating
             move_pool = refresh_move_pool(zoning, max_moves=pool_max_moves)
             print(f"[Reheat] iter={i} Tmax={Tmax:.2f} pool={len(move_pool)}")
 
@@ -450,11 +527,10 @@ def run_sa(
                 f"Pool={len(move_pool)}, NoImprove={no_improve}"
             )
 
-    # Restore best at end
     h.H, h.V = best_state
 
     if not is_valid_cycle(h):
-        raise RuntimeError("Best state invalid at end (should not happen).")
+        raise RuntimeError("Best state invalid at end.")
 
     print(f"Final best crossings: {best_cost}")
 
@@ -463,45 +539,17 @@ def run_sa(
         plt.pause(pause_seconds)
         plt.ioff()
         plt.show()
-        
+
     return best_cost, best_ops
-
-"""if __name__ == "__main__":
-    run_sa(
-        width=30,
-        height=30,
-        iterations=5000,
-        Tmax=80.0,
-        Tmin=0.5,
-        seed=42,
-        plot_live=True,
-        show_every_accepted=200,
-        pause_seconds=0.05,
-        dataset_dir="Dataset1",
-        max_move_tries=25,
-        pool_refresh_period=250,
-        pool_max_moves=5000,
-        reheat_patience=3000,
-        reheat_factor=1.5,
-        reheat_cap=600.0,
-    )"""
-
-
-# ============================================================
-# Multi-run experiment 
-import io
-import re
-import contextlib
-import statistics
 
 
 def run_sa_return_best(**kwargs) -> int:
+    """Run SA and return only the best crossing count."""
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
         run_sa(**kwargs)
 
     out = buf.getvalue()
-
     m = re.search(r"Final best crossings:\s*(\d+)", out)
     if not m:
         tail = "\n".join(out.splitlines()[-40:])
@@ -521,7 +569,7 @@ def run_sa_multiple_seeds(
     plot_live=False,
     show_every_accepted=0,
     pause_seconds=0.0,
-    dataset_dir="Dataset1",
+    dataset_dir="Dataset",
     max_move_tries=25,
     pool_refresh_period=250,
     pool_max_moves=5000,
@@ -529,8 +577,13 @@ def run_sa_multiple_seeds(
     reheat_factor=1.5,
     reheat_cap=600.0,
 ):
+    """
+    Run SA optimization over multiple random seeds.
+    
+    Returns:
+        Tuple of (results_list, best, mean, std)
+    """
     total_start = time.perf_counter()
-
     results = []
 
     for s in seeds:
@@ -578,7 +631,7 @@ def run_sa_multiple_seeds(
 
 
 if __name__ == "__main__":
-    seeds = list(range(10))  
+    seeds = list(range(10))
     run_sa_multiple_seeds(
         seeds,
         width=50,
@@ -586,10 +639,10 @@ if __name__ == "__main__":
         iterations=5000,
         Tmax=80.0,
         Tmin=0.5,
-        plot_live=False,         # batch mode
+        plot_live=False,
         show_every_accepted=0,
         pause_seconds=0.0,
-        dataset_dir="Dataset1",
+        dataset_dir="Dataset",
         max_move_tries=25,
         pool_refresh_period=250,
         pool_max_moves=5000,
@@ -597,4 +650,3 @@ if __name__ == "__main__":
         reheat_factor=1.5,
         reheat_cap=600.0,
     )
-

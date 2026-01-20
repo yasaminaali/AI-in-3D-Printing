@@ -1,3 +1,12 @@
+"""
+CNN+RNN model for learning optimal operation sequences.
+
+Architecture:
+- CNN: Extracts spatial features from grid state tensors
+- GRU: Processes temporal sequences of states  
+- Output heads: Predicts operation type, subgrid kind, and orientation
+"""
+
 import os
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
@@ -7,12 +16,15 @@ from typing import List, Dict, Any, Set, Tuple
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.utils.data import Dataset, DataLoader 
+from torch.utils.data import Dataset, DataLoader
 
 
-# Positive / negative labels
-# Orientations, Subgrid_kinds, Ops
 def scan_action_metadata(actions_csv: str):
+    """
+    Scan actions CSV to extract unique values for classification.
+    
+    Returns dict with orientations, subgrid_kinds, ops, and counts.
+    """
     orientations = set()
     subgrid_kinds = set()
     ops = set()

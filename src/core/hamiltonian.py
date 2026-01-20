@@ -1,31 +1,52 @@
+"""
+Hamiltonian path operations and edge management for grid graphs.
+
+This module provides the HamiltonianSTL class which manages grid-based
+Hamiltonian paths using horizontal (H) and vertical (V) edge matrices.
+"""
+
 from typing import Tuple, List, Optional, Set
 import random
 
 Point = Tuple[int, int]
 
+
 class HamiltonianSTL:
+    """
+    Manages a Hamiltonian path/cycle on a grid graph.
+    
+    The grid is represented using two boolean matrices:
+    - H[y][x]: True if horizontal edge exists connecting (x,y) to (x+1,y)
+    - V[y][x]: True if vertical edge exists connecting (x,y) to (x,y+1)
+    
+    Attributes:
+        width: Grid width
+        height: Grid height
+        H: Horizontal edge matrix
+        V: Vertical edge matrix
+    """
+    
     def __init__(self, width: int, height: int):
         self.width, self.height = width, height
         self.H = [[False] * (width - 1) for _ in range(height)]
         self.V = [[False] * width       for _ in range(height - 1)]
         self.zigzag()
-        #self.snake_bends()
-        #self.hilbert()
-        #self.fermat_spiral()
 
-    # Multipla Initial Paths : Zigzag - Snake Bends - Hilbert - Random
+    # ---------- Initial Path Patterns ----------
 
-    # Zigzag initial path
     def zigzag(self):
+        """Initialize with a zigzag pattern (default)."""
         for y in range(self.height):
             for x in range(self.width - 1):
                 self.H[y][x] = True
             if y < self.height - 1:
                 self.V[y][0 if y % 2 else self.width - 1] = True
 
-    # Snake Bends
-    # Grid is size of odd numbers (9,9)
     def snake_bends(self): 
+        """
+        Initialize with snake bends pattern.
+        Best suited for grids with odd dimensions (e.g., 9x9).
+        """
         path = []
         visited = [[False for _ in range(self.width)] for _ in range(self.height)]
 
@@ -91,9 +112,11 @@ class HamiltonianSTL:
 
         return path
     
-    # Hilbert Path
-    # Grid is square and of size 2ⁿ × 2ⁿ
     def hilbert(self):
+        """
+        Initialize with Hilbert curve pattern.
+        Grid must be square with size 2^n (e.g., 8x8, 16x16).
+        """
         from math import log2
 
         def rot(s, x, y, rx, ry):
@@ -130,22 +153,22 @@ class HamiltonianSTL:
             elif y1 == y2 and abs(x1 - x2) == 1:
                 self.H[y1][min(x1, x2)] = True
     
-    # Fermat Spiral
     def fermat_spiral(self):
+        """Initialize with Fermat spiral (inward spiral) pattern."""
         left, right = 0, self.width - 1
         top, bottom = 0, self.height - 1
         path = []
 
         while left <= right and top <= bottom:
-            for x in range(left, right + 1):     # → right
+            for x in range(left, right + 1):     # right
                 path.append((x, top))
-            for y in range(top + 1, bottom + 1): # ↓ down
+            for y in range(top + 1, bottom + 1): # down
                 path.append((right, y))
             if top != bottom:
-                for x in range(right - 1, left - 1, -1): # ← left
+                for x in range(right - 1, left - 1, -1): # left
                     path.append((x, bottom))
             if left != right:
-                for y in range(bottom - 1, top, -1): # ↑ up
+                for y in range(bottom - 1, top, -1): # up
                     path.append((left, y))
             left += 1
             right -= 1
@@ -158,32 +181,40 @@ class HamiltonianSTL:
             elif y1 == y2 and abs(x1 - x2) == 1:
                 self.H[y1][min(x1, x2)] = True
 
+    # ---------- Edge Operations ----------
+
     def set_edge(self, p1: Point, p2: Point, v: bool = True):
+        """Set or clear an edge between two adjacent points."""
         if not p1 or not p2:
             return
-        x1, y1 = p1; x2, y2 = p2
+        x1, y1 = p1
+        x2, y2 = p2
         if x1 == x2 and abs(y1 - y2) == 1:
             self.V[min(y1, y2)][x1] = v
         elif y1 == y2 and abs(x1 - x2) == 1:
             self.H[y1][min(x1, x2)] = v
 
     def clear_edges(self):
-        # Remove all horizontal and vertical edges.
+        """Remove all edges from the grid."""
         self.H = [[0 for _ in range(self.width - 1)] for _ in range(self.height)]
         self.V = [[0 for _ in range(self.width)] for _ in range(self.height - 1)]
 
-
     def has_edge(self, p1: Point, p2: Point) -> bool:
+        """Check if an edge exists between two points."""
         if not p1 or not p2:
             return False
-        x1, y1 = p1; x2, y2 = p2
+        x1, y1 = p1
+        x2, y2 = p2
         if x1 == x2 and abs(y1 - y2) == 1:
             return self.V[min(y1, y2)][x1]
         if y1 == y2 and abs(x1 - x2) == 1:
             return self.H[y1][min(x1, x2)]
         return False
 
+    # ---------- Subgrid Operations ----------
+
     def get_subgrid(self, c1: Point, c2: Point) -> List[List[Optional[Point]]]:
+        """Extract a rectangular subgrid between two corner points."""
         x0, x1 = sorted((c1[0], c2[0]))
         y0, y1 = sorted((c1[1], c2[1]))
         return [
@@ -195,31 +226,37 @@ class HamiltonianSTL:
         ]
 
     def _subgrid_flat_points(self, sub: List[List[Optional[Point]]]) -> List[Point]:
+        """Flatten subgrid to list of non-None points."""
         return [p for row in sub for p in row if p is not None]
 
     def _edges_present_in_subgrid(self, sub: List[List[Optional[Point]]]) -> Set[Tuple[int, int]]:
+        """Get set of edge indices present in subgrid."""
         pts = self._subgrid_flat_points(sub)
-        idx_of = {p:i for i,p in enumerate(pts)}
+        idx_of = {p: i for i, p in enumerate(pts)}
         present = set()
-        for i,(x,y) in enumerate(pts):
-            for dx,dy in [(1,0),(-1,0),(0,1),(0,-1)]:
-                q = (x+dx,y+dy)
-                if q in idx_of and self.has_edge((x,y),q):
+        for i, (x, y) in enumerate(pts):
+            for dx, dy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
+                q = (x + dx, y + dy)
+                if q in idx_of and self.has_edge((x, y), q):
                     j = idx_of[q]
                     if i < j:
-                        present.add((i,j))
+                        present.add((i, j))
         return present
 
     def _apply_edge_diff_in_subgrid(self, sub, old_edges, new_edges):
+        """Apply edge changes within a subgrid."""
         pts = self._subgrid_flat_points(sub)
         old_set = set(tuple(sorted(e)) for e in old_edges)
         new_set = set(tuple(sorted(e)) for e in new_edges)
-        for i,j in old_set - new_set:
+        for i, j in old_set - new_set:
             self.set_edge(pts[i], pts[j], False)
-        for i,j in new_set - old_set:
+        for i, j in new_set - old_set:
             self.set_edge(pts[i], pts[j], True)
 
-    # All 8 transpose cases (3x3)
+    # ---------- Transformation Patterns ----------
+
+    # All 8 transpose cases (3x3 subgrid)
+    # Variants: sr, wa, sl, ea, nl, eb, nr, wb (compass directions)
     transpose_patterns = {
         'sr': {'old': [(0,1),(1,2),(2,5),(3,4),(4,5),(6,7),(7,8)],
                'new': [(0,3),(1,2),(1,4),(2,5),(4,7),(5,8),(6,7)]},
@@ -239,7 +276,8 @@ class HamiltonianSTL:
                'new': [(3,4),(4,5),(6,7),(7,8),(5,8),(1,2),(0,3)]}
     }
 
-    # All 4 flip cases (3x2 or 2x3)
+    # All 4 flip cases (3x2 or 2x3 subgrid)
+    # Variants: n, s (3x2), e, w (2x3)
     flip_patterns = {
         'w': {'old': [(0,3),(1,2),(1,4),(4,5)],
               'new': [(0,1),(2,5),(3,4),(1,4)]},
@@ -251,23 +289,38 @@ class HamiltonianSTL:
               'new': [(0,1),(2,3),(2,4),(3,5)]}
     }
 
+    # ---------- Validation ----------
+
     def validate_full_path(self) -> bool:
+        """Validate that the grid contains a valid Hamiltonian path."""
         visited = set()
-        stack = [(0,0)]
+        stack = [(0, 0)]
         while stack:
             cur = stack.pop()
             if cur in visited:
                 continue
             visited.add(cur)
             x, y = cur
-            for dx, dy in [(-1,0),(1,0),(0,-1),(0,1)]:
-                nx, ny = x+dx, y+dy
+            for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                nx, ny = x + dx, y + dy
                 if 0 <= nx < self.width and 0 <= ny < self.height:
                     if self.has_edge(cur, (nx, ny)):
                         stack.append((nx, ny))
         return len(visited) == self.width * self.height
 
+    # ---------- Transformations ----------
+
     def transpose_subgrid(self, sub: List[List[Point]], variant: str = 'sr'):
+        """
+        Apply a transpose operation to a 3x3 subgrid.
+        
+        Args:
+            sub: 3x3 subgrid from get_subgrid()
+            variant: One of 'sr', 'wa', 'sl', 'ea', 'nl', 'eb', 'nr', 'wb'
+            
+        Returns:
+            Tuple of (subgrid, result_string)
+        """
         if variant not in self.transpose_patterns:
             return sub, f'unknown variant {variant}'
         case = self.transpose_patterns[variant]
@@ -288,6 +341,16 @@ class HamiltonianSTL:
         return sub, f'transposed_{variant}'
 
     def flip_subgrid(self, sub: List[List[Point]], variant: str):
+        """
+        Apply a flip operation to a 3x2 or 2x3 subgrid.
+        
+        Args:
+            sub: Subgrid from get_subgrid()
+            variant: One of 'n', 's' (3x2) or 'e', 'w' (2x3)
+            
+        Returns:
+            Tuple of (subgrid, result_string)
+        """
         if variant not in self.flip_patterns:
             return sub, f'unknown variant {variant}'
         case = self.flip_patterns[variant]
@@ -307,9 +370,12 @@ class HamiltonianSTL:
 
         return sub, f'flipped_{variant}'
 
+    # ---------- Visualization ----------
+
     def print_ascii_edges(self, highlight_subgrid=None):
-        grid_h, grid_w = 2*self.height - 1, 2*self.width - 1
-        canvas = [[' ']*grid_w for _ in range(grid_h)]
+        """Print ASCII representation of the grid with edges."""
+        grid_h, grid_w = 2 * self.height - 1, 2 * self.width - 1
+        canvas = [[' '] * grid_w for _ in range(grid_h)]
         highlight = set()
         if highlight_subgrid:
             for row in highlight_subgrid:
@@ -318,16 +384,16 @@ class HamiltonianSTL:
                         highlight.add(pt)
         for y in range(self.height):
             for x in range(self.width):
-                cx, cy = 2*x, 2*y
-                canvas[cy][cx] = 'X' if (x,y) in highlight else 'O'
+                cx, cy = 2 * x, 2 * y
+                canvas[cy][cx] = 'X' if (x, y) in highlight else 'O'
         for y in range(self.height):
             for x in range(self.width - 1):
                 if self.H[y][x]:
-                    canvas[2*y][2*x+1] = '-'
+                    canvas[2 * y][2 * x + 1] = '-'
         for y in range(self.height - 1):
             for x in range(self.width):
                 if self.V[y][x]:
-                    canvas[2*y+1][2*x] = '|'
+                    canvas[2 * y + 1][2 * x] = '|'
         for row in canvas:
             print(''.join(row))
 
@@ -338,7 +404,7 @@ if __name__ == '__main__':
     print("Original Grid:")
     h.print_ascii_edges()
 
-    sub = h.get_subgrid((0,0),(2,2))
+    sub = h.get_subgrid((0, 0), (2, 2))
     print("\nSubgrid for transpose:")
     for row in sub:
         print(row)
@@ -355,7 +421,7 @@ if __name__ == '__main__':
     h.print_ascii_edges(highlight_subgrid=sub_f)
     print()
 
-    sub = h.get_subgrid((7,0),(9,2))
+    sub = h.get_subgrid((7, 0), (9, 2))
     print("\nSubgrid for transpose:")
     for row in sub:
         print(row)

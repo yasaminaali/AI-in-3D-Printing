@@ -5,18 +5,23 @@ Quick test data collection - uses smaller grid and fewer iterations.
 import time
 import random
 import os
-from Flip_Transpose2 import HamiltonianSTL
-from Zones import zones_left_right, zones_diagonal
-from Collector import ZoningCollector, RunMeta
-from Collector_helper import mutate_layer_logged
-import SA
-import SA_patterns
+import sys
+
+# Add project root to path for imports
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+
+from src.core.hamiltonian import HamiltonianSTL
+from src.core.zones import zones_left_right, zones_diagonal
+from src.data.collector import ZoningCollector, RunMeta
+from src.data.collector_helper import mutate_layer_logged
+from src.optimization import simulated_annealing as SA
+from src.optimization import sa_patterns as SA_patterns
 
 OUT_DIR = "Dataset"
 SEED = 42
 
 # Smaller test configuration
-SIZES = [(10,10), (15,15)]
+SIZES = [(10, 10), (15, 15)]
 K_LIST = [2]  # Only test with 2 zones
 INSTANCES_PER_COMBO = 2  # Only 2 instances per combo
 
@@ -24,10 +29,10 @@ SA_ITERS = 500  # Reduced iterations for faster testing
 TMAX = 40.0
 TMIN = 0.5
 
-max_move_tries=15
-pool_refresh_period=100
-pool_max_moves=1000
-reheat_patience=500
+max_move_tries = 15
+pool_refresh_period = 100
+pool_max_moves = 1000
+reheat_patience = 500
 reheat_factor=1.5
 reheat_cap=300.0
 

@@ -1,24 +1,33 @@
-# Collect Data from SA Algorithm
+"""
+Full-scale data collection from SA Algorithm.
+
+Runs SA optimization across multiple grid sizes, zone patterns, and seeds.
+"""
 
 import time
 import random
 import os
-from Flip_Transpose2 import HamiltonianSTL
-from Zones import (
+import sys
+
+# Add project root to path for imports
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+
+from src.core.hamiltonian import HamiltonianSTL
+from src.core.zones import (
     zones_left_right, zones_top_bottom, zones_diagonal,
     zones_stripes, zones_checkerboard, zones_voronoi
 )
-from Collector import ZoningCollector, RunMeta
-from Collector_helper import mutate_layer_logged
-import SA
-import SA_patterns
+from src.data.collector import ZoningCollector, RunMeta
+from src.data.collector_helper import mutate_layer_logged
+from src.optimization import simulated_annealing as SA
+from src.optimization import sa_patterns as SA_patterns
 
 OUT_DIR = "Dataset"
 SEED = 42
 
-SIZES = [(30,30),(50,50),(80,80),(100,100),(150,150),(200,200)]
+SIZES = [(30, 30), (50, 50), (80, 80), (100, 100), (150, 150), (200, 200)]
 # Number of Zones
-K_LIST = [2,3,4] 
+K_LIST = [2, 3, 4]
 
 INSTANCES_PER_COMBO = 10
 
@@ -26,8 +35,8 @@ SA_ITERS = 5000
 TMAX = 80.0
 TMIN = 0.5
 
-max_move_tries=25
-pool_refresh_period=250
+max_move_tries = 25
+pool_refresh_period = 250
 pool_max_moves=5000
 reheat_patience=3000
 reheat_factor=1.5

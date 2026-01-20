@@ -1,0 +1,341 @@
+{
+  "timestamp": "2026-01-19T23:25:38.461508",
+  "model_info": {
+    "model_path": "models/global_seq_policy.pt",
+    "file_size_mb": 1.0226716995239258,
+    "layers": [
+      "conv.0.weight",
+      "conv.0.bias",
+      "conv.2.weight",
+      "conv.2.bias",
+      "fc_state.1.weight",
+      "fc_state.1.bias",
+      "fc_cfg.0.weight",
+      "fc_cfg.0.bias",
+      "rnn.weight_ih_l0",
+      "rnn.weight_hh_l0",
+      "rnn.bias_ih_l0",
+      "rnn.bias_hh_l0",
+      "head_op.weight",
+      "head_op.bias",
+      "head_sg.weight",
+      "head_sg.bias",
+      "head_ori.weight",
+      "head_ori.bias"
+    ],
+    "total_parameters": 266417,
+    "layer_details": {
+      "conv.0.weight": {
+        "shape": [
+          32,
+          10,
+          3,
+          3
+        ],
+        "parameters": 2880
+      },
+      "conv.0.bias": {
+        "shape": [
+          32
+        ],
+        "parameters": 32
+      },
+      "conv.2.weight": {
+        "shape": [
+          64,
+          32,
+          3,
+          3
+        ],
+        "parameters": 18432
+      },
+      "conv.2.bias": {
+        "shape": [
+          64
+        ],
+        "parameters": 64
+      },
+      "fc_state.1.weight": {
+        "shape": [
+          128,
+          1024
+        ],
+        "parameters": 131072
+      },
+      "fc_state.1.bias": {
+        "shape": [
+          128
+        ],
+        "parameters": 128
+      },
+      "fc_cfg.0.weight": {
+        "shape": [
+          32,
+          7
+        ],
+        "parameters": 224
+      },
+      "fc_cfg.0.bias": {
+        "shape": [
+          32
+        ],
+        "parameters": 32
+      },
+      "rnn.weight_ih_l0": {
+        "shape": [
+          384,
+          160
+        ],
+        "parameters": 61440
+      },
+      "rnn.weight_hh_l0": {
+        "shape": [
+          384,
+          128
+        ],
+        "parameters": 49152
+      },
+      "rnn.bias_ih_l0": {
+        "shape": [
+          384
+        ],
+        "parameters": 384
+      },
+      "rnn.bias_hh_l0": {
+        "shape": [
+          384
+        ],
+        "parameters": 384
+      },
+      "head_op.weight": {
+        "shape": [
+          2,
+          128
+        ],
+        "parameters": 256
+      },
+      "head_op.bias": {
+        "shape": [
+          2
+        ],
+        "parameters": 2
+      },
+      "head_sg.weight": {
+        "shape": [
+          3,
+          128
+        ],
+        "parameters": 384
+      },
+      "head_sg.bias": {
+        "shape": [
+          3
+        ],
+        "parameters": 3
+      },
+      "head_ori.weight": {
+        "shape": [
+          12,
+          128
+        ],
+        "parameters": 1536
+      },
+      "head_ori.bias": {
+        "shape": [
+          12
+        ],
+        "parameters": 12
+      }
+    }
+  },
+  "dataset_info": {
+    "states": {
+      "total": 10241,
+      "unique_instances": 96,
+      "grid_sizes": [
+        "20x20",
+        "30x30",
+        "40x40",
+        "50x50"
+      ],
+      "zone_patterns": [
+        "sa_diagonal",
+        "sa_run",
+        "sa_stripes",
+        "sa_voronoi"
+      ]
+    },
+    "actions": {
+      "total_actions": 9626592,
+      "valid_actions": 33342,
+      "best_actions": 10241,
+      "operations": {
+        "transpose": 6417728,
+        "flip": 3208864
+      },
+      "orientations": {
+        "sr": 802216,
+        "wa": 802216,
+        "sl": 802216,
+        "ea": 802216,
+        "nl": 802216,
+        "eb": 802216,
+        "nr": 802216,
+        "wb": 802216,
+        "n": 802216,
+        "s": 802216,
+        "e": 802216,
+        "w": 802216
+      }
+    }
+  },
+  "benchmark_results": {
+    "config": {
+      "num_runs": 3,
+      "grid_sizes": [
+        "20x20",
+        "25x25",
+        "30x30"
+      ],
+      "iterations_per_run": 500
+    },
+    "individual_results": [
+      {
+        "grid_size": "20x20",
+        "run": 1,
+        "seed": 100,
+        "initial_crossings": 20,
+        "final_crossings": 12,
+        "reduction_pct": 40.0,
+        "time_seconds": 4.151568651199341
+      },
+      {
+        "grid_size": "20x20",
+        "run": 2,
+        "seed": 101,
+        "initial_crossings": 20,
+        "final_crossings": 8,
+        "reduction_pct": 60.0,
+        "time_seconds": 4.63288140296936
+      },
+      {
+        "grid_size": "20x20",
+        "run": 3,
+        "seed": 102,
+        "initial_crossings": 20,
+        "final_crossings": 10,
+        "reduction_pct": 50.0,
+        "time_seconds": 3.9743340015411377
+      },
+      {
+        "grid_size": "25x25",
+        "run": 1,
+        "seed": 100,
+        "initial_crossings": 25,
+        "final_crossings": 17,
+        "reduction_pct": 32.0,
+        "time_seconds": 9.375946998596191
+      },
+      {
+        "grid_size": "25x25",
+        "run": 2,
+        "seed": 101,
+        "initial_crossings": 25,
+        "final_crossings": 17,
+        "reduction_pct": 32.0,
+        "time_seconds": 10.345693826675415
+      },
+      {
+        "grid_size": "25x25",
+        "run": 3,
+        "seed": 102,
+        "initial_crossings": 25,
+        "final_crossings": 17,
+        "reduction_pct": 32.0,
+        "time_seconds": 11.588878393173218
+      },
+      {
+        "grid_size": "30x30",
+        "run": 1,
+        "seed": 100,
+        "initial_crossings": 30,
+        "final_crossings": 26,
+        "reduction_pct": 13.333333333333334,
+        "time_seconds": 20.035210847854614
+      },
+      {
+        "grid_size": "30x30",
+        "run": 2,
+        "seed": 101,
+        "initial_crossings": 30,
+        "final_crossings": 30,
+        "reduction_pct": 0.0,
+        "time_seconds": 23.281389236450195
+      },
+      {
+        "grid_size": "30x30",
+        "run": 3,
+        "seed": 102,
+        "initial_crossings": 30,
+        "final_crossings": 24,
+        "reduction_pct": 20.0,
+        "time_seconds": 22.41912341117859
+      }
+    ],
+    "aggregated": {
+      "20x20": {
+        "runs": 3,
+        "initial_crossings": 20,
+        "final_crossings_min": 8,
+        "final_crossings_max": 12,
+        "final_crossings_avg": 10.0,
+        "reduction_pct_avg": 50.0,
+        "time_avg_seconds": 4.252928018569946
+      },
+      "25x25": {
+        "runs": 3,
+        "initial_crossings": 25,
+        "final_crossings_min": 17,
+        "final_crossings_max": 17,
+        "final_crossings_avg": 17.0,
+        "reduction_pct_avg": 32.0,
+        "time_avg_seconds": 10.436839739481607
+      },
+      "30x30": {
+        "runs": 3,
+        "initial_crossings": 30,
+        "final_crossings_min": 24,
+        "final_crossings_max": 30,
+        "final_crossings_avg": 26.666666666666668,
+        "reduction_pct_avg": 11.111111111111112,
+        "time_avg_seconds": 21.9119078318278
+      }
+    }
+  },
+  "zone_results": {
+    "grid_size": "25x25",
+    "iterations": 500,
+    "results": [
+      {
+        "pattern": "left_right",
+        "final_crossings": 15,
+        "time_seconds": 10.542726993560791
+      },
+      {
+        "pattern": "diagonal",
+        "final_crossings": 25,
+        "time_seconds": 10.796856164932251
+      },
+      {
+        "pattern": "stripes_v",
+        "final_crossings": 30,
+        "time_seconds": 10.189552783966064
+      },
+      {
+        "pattern": "voronoi",
+        "final_crossings": 29,
+        "time_seconds": 11.06417989730835
+      }
+    ]
+  }
+}

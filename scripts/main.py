@@ -1,6 +1,8 @@
 """
 Main Pipeline for AI-in-3D-Printing
 Orchestrates data collection, training, and evaluation.
+
+Run from project root: python scripts/main.py
 """
 
 import os
@@ -8,6 +10,12 @@ import sys
 import time
 import argparse
 from pathlib import Path
+
+# Add project root to path
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, PROJECT_ROOT)
+os.chdir(PROJECT_ROOT)
+
 
 def check_dependencies():
     """Check if all required packages are installed."""
@@ -51,11 +59,6 @@ def collect_data(args):
     print("PHASE 1: Data Collection")
     print("=" * 60)
     
-    # Check if Collect_SA.py exists
-    if not os.path.exists("Collect_SA_quick.py"):
-        print("Error: Collect_SA_quick.py not found!")
-        return False
-    
     # Create Dataset directory if it doesn't exist
     os.makedirs("Dataset", exist_ok=True)
     os.makedirs("Dataset/features", exist_ok=True)
@@ -82,7 +85,7 @@ def collect_data(args):
     
     try:
         # Import and run data collection
-        import Collect_SA_quick
+        from src.data import collect_quick
         print("\n[OK] Data collection completed successfully!")
         return True
     except Exception as e:
@@ -97,11 +100,6 @@ def train_model(args):
     print("\n" + "=" * 60)
     print("PHASE 2: Model Training")
     print("=" * 60)
-    
-    # Check if CNN+RNN.py exists
-    if not os.path.exists("CNN+RNN.py"):
-        print("Error: CNN+RNN.py not found!")
-        return False
     
     # Check if dataset exists
     if not os.path.exists("Dataset/states.csv") or not os.path.exists("Dataset/actions.csv"):
@@ -128,7 +126,8 @@ def train_model(args):
     
     try:
         # Run training
-        os.system(f'"{sys.executable}" CNN+RNN.py')
+        from src.ml import cnn_rnn
+        # Training happens on import if __name__ block executes
         print("-" * 60)
         print("\n[OK] Training completed!")
         return True

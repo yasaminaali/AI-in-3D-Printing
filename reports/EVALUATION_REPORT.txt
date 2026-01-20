@@ -1,0 +1,94 @@
+======================================================================
+CNN+RNN MODEL EVALUATION REPORT
+Generated: 2026-01-19 23:25:38
+======================================================================
+
+## MODEL INFORMATION
+--------------------------------------------------
+Model Path: models/global_seq_policy.pt
+File Size: 1.02 MB
+Total Parameters: 266,417
+Number of Layers: 18
+
+Layer Architecture:
+  conv.0.weight: [32, 10, 3, 3] (2,880 params)
+  conv.0.bias: [32] (32 params)
+  conv.2.weight: [64, 32, 3, 3] (18,432 params)
+  conv.2.bias: [64] (64 params)
+  fc_state.1.weight: [128, 1024] (131,072 params)
+  fc_state.1.bias: [128] (128 params)
+  fc_cfg.0.weight: [32, 7] (224 params)
+  fc_cfg.0.bias: [32] (32 params)
+  rnn.weight_ih_l0: [384, 160] (61,440 params)
+  rnn.weight_hh_l0: [384, 128] (49,152 params)
+  rnn.bias_ih_l0: [384] (384 params)
+  rnn.bias_hh_l0: [384] (384 params)
+  head_op.weight: [2, 128] (256 params)
+  head_op.bias: [2] (2 params)
+  head_sg.weight: [3, 128] (384 params)
+  head_sg.bias: [3] (3 params)
+  head_ori.weight: [12, 128] (1,536 params)
+  head_ori.bias: [12] (12 params)
+
+## TRAINING DATASET
+--------------------------------------------------
+Total States: 10,241
+Unique Instances: 96
+Grid Sizes: 20x20, 30x30, 40x40, 50x50
+Zone Patterns: sa_diagonal, sa_run, sa_stripes, sa_voronoi
+
+Total Actions: 9,626,592
+Valid Actions: 33,342
+Best Actions (labels): 10,241
+
+Operation Distribution:
+  flip: 3,208,864 (33.3%)
+  transpose: 6,417,728 (66.7%)
+
+## OPTIMIZATION BENCHMARK
+--------------------------------------------------
+Runs per size: 3
+Iterations per run: 500
+
+Results by Grid Size:
+
+  20x20:
+    Initial crossings: 20
+    Final crossings: 10.0 (range: 8-12)
+    Average reduction: 50.0%
+    Average time: 4.25s
+
+  25x25:
+    Initial crossings: 25
+    Final crossings: 17.0 (range: 17-17)
+    Average reduction: 32.0%
+    Average time: 10.44s
+
+  30x30:
+    Initial crossings: 30
+    Final crossings: 26.7 (range: 24-30)
+    Average reduction: 11.1%
+    Average time: 21.91s
+
+## ZONE PATTERN COMPARISON
+--------------------------------------------------
+Grid Size: 25x25
+Iterations: 500
+
+Results by Pattern:
+    left_right: 15 crossings (10.54s)
+      diagonal: 25 crossings (10.80s)
+     stripes_v: 30 crossings (10.19s)
+       voronoi: 29 crossings (11.06s)
+
+## SUMMARY
+--------------------------------------------------
+The CNN+RNN model was successfully trained on the collected data.
+- Model has 266,417 trainable parameters
+- Trained on 96 optimization instances
+- Learned from 10,241 labeled best actions
+- Best average crossing reduction: 50.0%
+
+======================================================================
+END OF REPORT
+======================================================================

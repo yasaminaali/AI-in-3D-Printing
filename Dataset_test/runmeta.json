@@ -1,0 +1,10 @@
+{
+  "run_id": "sa_1768883157",
+  "timestamp": "2026-01-19 23:25:57",
+  "algorithm": "SA",
+  "init_path": "zigzag",
+  "grid_w": 10,
+  "grid_h": 10,
+  "random_seed": 42,
+  "zones_max": 6
+}

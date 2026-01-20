@@ -1,17 +1,22 @@
-# Multiple Zones Patterns: Islands - Diagonal - Stripes - Voronoi Diagram
+"""
+Simulated Annealing with multiple zone patterns.
+
+Supports: Islands, Diagonal, Stripes, Voronoi Diagram zone configurations.
+"""
+
 import random
 import math
 import time
 import matplotlib.pyplot as plt
 from typing import Tuple, Optional, Dict, Any, List
 
-from Flip_Transpose2 import HamiltonianSTL
-from Collector import ZoningCollector, RunMeta
-from Collector_helper import mutate_layer_logged
-
-from Zones import zones_diagonal, zones_stripes, zones_voronoi
+from src.core.hamiltonian import HamiltonianSTL
+from src.data.collector import ZoningCollector, RunMeta
+from src.data.collector_helper import mutate_layer_logged
+from src.core.zones import zones_diagonal, zones_stripes, zones_voronoi
 
 Point = Tuple[int, int]
+
 
 def _sigmoid_stable(z: float) -> float:
     if z >= 0:

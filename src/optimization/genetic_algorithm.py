@@ -1,14 +1,11 @@
-# GA over sequences of local operations
-#  Population is built from SA
-#  One-point crossover on operation sequences
-#  Keep a child ONLY IF:
-#      - valid (applied >= MIN_APPLIED_VALID), AND
-#      - does NOT increase crossings (child_best_seen <= min(parent_best_seen))
-# Final: prints TOP 10 crossings
+"""
+Genetic Algorithm over sequences of local operations.
 
-#-------------------
-# Note for me: print unique fitness for generations
-#-------------------
+Population is built from SA runs. Uses one-point crossover on operation sequences.
+Keeps a child ONLY IF:
+    - valid (applied >= MIN_APPLIED_VALID), AND
+    - does NOT increase crossings (child_best_seen <= min(parent_best_seen))
+"""
 
 import os
 import copy
@@ -18,14 +15,14 @@ from typing import List, Tuple, Optional, Dict, Any
 
 import matplotlib.pyplot as plt
 
-from Flip_Transpose2 import HamiltonianSTL
-import SA  
+from src.core.hamiltonian import HamiltonianSTL
+from src.optimization import simulated_annealing as SA
 
 GENOME_LEN = 100
 SAVE_TOP10_PNGS = True
 TOP10_DIR = "top10_plots"
 
-DEBUG_SUMMARY_EVERY = 20  
+DEBUG_SUMMARY_EVERY = 20
 
 MIN_APPLIED_VALID = 1           
 MAX_TRIES_PER_SLOT = 60  
