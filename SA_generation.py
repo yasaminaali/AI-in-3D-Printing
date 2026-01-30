@@ -21,7 +21,7 @@ import json
 import time
 import math
 import random
-from typing import Tuple, Optional, Dict, Any, List
+from typing import Tuple, Optional, Dict, Any, List, Set
 
 import matplotlib.pyplot as plt
 
@@ -97,7 +97,7 @@ def zones_islands(
 
         aL, aR = ax - pad, ax + S - 1 + pad
         aT, aB = ay - pad, ay + S - 1 + pad
-        
+
         bL, bR = bx, bx + S - 1
         bT, bB = by, by + S - 1
         return not (aR < bL or bR < aL or aB < bT or bB < aT)
@@ -150,7 +150,8 @@ def build_zones(
 
     if m == "islands":
         z, meta = zones_islands(
-            W, H,
+            W,
+            H,
             num_islands=num_islands,
             island_size=island_size,
             seed=seed,
@@ -174,6 +175,12 @@ def build_zones(
 
     raise ValueError(f"Unknown zone_mode='{zone_mode}'")
 
+def zones_to_grid(zones: Dict[Point, int], W: int, H: int) -> List[List[int]]:
+    """
+    Convert zones dict {(x,y)->zone_id} into a dense HxW grid:
+      zone_grid[y][x] = zone_id
+    """
+    return [[int(zones[(x, y)]) for x in range(W)] for y in range(H)]
 
 # ============================================================
 # Crossings
@@ -198,34 +205,78 @@ def compute_crossings(h: HamiltonianSTL, zones: Dict[Point, int]) -> int:
 
 
 # ============================================================
-# Move application 
+# Move application
 # ============================================================
-def _msg_from_result(ret) -> str:
-    if isinstance(ret, tuple) and len(ret) >= 2:
-        return str(ret[1])
-    return str(ret)
+def _infer_success(ret, changed: bool) -> bool:
+    """
+    Infer whether an op succeeded from different return styles.
+    """
+    if ret is None:
+        return True
+
+    if isinstance(ret, bool):
+        return ret
+
+    if isinstance(ret, dict) and "ok" in ret:
+        return bool(ret["ok"])
+
+    if isinstance(ret, tuple) and len(ret) > 0:
+        a = ret[0]
+        if isinstance(a, bool):
+            return bool(a)
+        msg = " ".join(str(x) for x in ret if x is not None).lower()
+        if any(k in msg for k in ("transposed", "flipped", "success", "succeeded", "ok", "done")):
+            return True
+        if any(k in msg for k in ("fail", "failed", "invalid", "error", "mismatch", "not flippable")):
+            return False
+        return changed
+
+    if isinstance(ret, str):
+        msg = ret.lower()
+        if any(k in msg for k in ("transposed", "flipped", "success", "succeeded", "ok", "done")):
+            return True
+        if any(k in msg for k in ("fail", "failed", "invalid", "error", "mismatch", "not flippable")):
+            return False
+        return changed
+
+    return changed
 
 
 def apply_move(h: HamiltonianSTL, mv: Dict[str, Any]) -> bool:
     op = mv["op"]
-    x, y, w, hh = mv["x"], mv["y"], mv["w"], mv["h"]
+    x, y = int(mv["x"]), int(mv["y"])
+    w, hh = int(mv["w"]), int(mv["h"])
     variant = mv["variant"]
 
-    if op == "transpose":
-        sub = h.get_subgrid((x, y), (x + 2, y + 2))
-        ret = h.transpose_subgrid(sub, variant)
-        ok = _msg_from_result(ret).startswith("transposed")
-    elif op == "flip":
-        sub = h.get_subgrid((x, y), (x + w - 1, y + hh - 1))
-        ret = h.flip_subgrid(sub, variant)
-        ok = _msg_from_result(ret).startswith("flipped")
-    else:
+    H_before, V_before = deep_copy(h.H, h.V)
+
+    try:
+        if op == "transpose":
+            # transpose 3x3
+            sub = h.get_subgrid((x, y), (x + 2, y + 2))
+            ret = h.transpose_subgrid(sub, variant)
+
+        elif op == "flip":
+            sub = h.get_subgrid((x, y), (x + w - 1, y + hh - 1))
+            ret = h.flip_subgrid(sub, variant)
+
+        else:
+            return False
+
+    except Exception:
+        h.H, h.V = H_before, V_before
         return False
 
+    changed = (h.H != H_before) or (h.V != V_before)
+    ok = _infer_success(ret, changed)
+
+    if not changed:
+        return False
     if not ok:
         return False
     if not is_valid_cycle(h):
         return False
+
     return True
 
 
@@ -247,20 +298,86 @@ def _transpose_variants(h: HamiltonianSTL) -> List[str]:
     try:
         return list(tp)
     except Exception:
-        return ["a", "b", "c", "d", "e", "f", "g", "h"]
+        return ["sr", "wa", "sl", "ea", "nl", "eb", "nr", "wb"]
+
+
+def _flip_variants(h: HamiltonianSTL) -> List[Tuple[Any, int, int]]:
+    fp = getattr(h, "flip_patterns", None)
+    if fp is None:
+        keys = ["w", "e", "n", "s"]
+    else:
+        if hasattr(fp, "keys"):
+            keys = list(fp.keys())
+        else:
+            try:
+                keys = list(fp)
+            except Exception:
+                keys = ["w", "e", "n", "s"]
+
+    out: List[Tuple[Any, int, int]] = []
+    for k in keys:
+        ks = str(k).lower()
+        if ks in ("w", "e"):
+            out.append((k, 3, 2)) 
+        elif ks in ("n", "s"):
+            out.append((k, 2, 3)) 
+        else:
+            # unknown key: try both
+            out.append((k, 3, 2))
+            out.append((k, 2, 3))
+    return out
+
+
+# Border->inner ordering helpers
+def _layer_index(x: int, y: int, W: int, H: int) -> int:
+    return min(x, y, W - 1 - x, H - 1 - y)
+
+
+def _center_layer_for_anchor(x: int, y: int, w: int, h: int, W: int, H: int) -> int:
+    cx = x + (w // 2)
+    cy = y + (h // 2)
+    return _layer_index(cx, cy, W, H)
 
 
 # ============================================================
-# Move pool (boundary scoring)
+# Move pool (zone-boundary scoring + border->inner)
 # ============================================================
-def _boundary_score_from_zones(W: int, H: int, zones: Dict[Point, int], x: int) -> int:
-    if x < 0 or x >= W - 1:
-        return 10**9
+def _zone_boundary_count_in_rect(
+    W: int,
+    H: int,
+    zones: Dict[Point, int],
+    x0: int,
+    y0: int,
+    w: int,
+    h: int,
+) -> int:
+    x1 = x0 + w - 1
+    y1 = y0 + h - 1
     s = 0
-    for y in range(H):
-        if zones[(x, y)] != zones[(x + 1, y)]:
-            s += 1
+
+    for y in range(y0, y1 + 1):
+        for x in range(x0, x1):
+            if zones[(x, y)] != zones[(x + 1, y)]:
+                s += 1
+
+    for y in range(y0, y1):
+        for x in range(x0, x1 + 1):
+            if zones[(x, y)] != zones[(x, y + 1)]:
+                s += 1
+
     return s
+
+
+def _boundary_score_for_anchor(
+    W: int,
+    H: int,
+    zones: Dict[Point, int],
+    x: int,
+    y: int,
+    w: int,
+    h: int,
+) -> int:
+    return _zone_boundary_count_in_rect(W, H, zones, x, y, w, h)
 
 
 def refresh_move_pool(
@@ -269,45 +386,50 @@ def refresh_move_pool(
     *,
     bias_to_boundary: bool = True,
     max_moves: int = 5000,
+    allowed_ops: Optional[Set[str]] = None,
+    border_to_inner: bool = False,
 ) -> List[Dict[str, Any]]:
     
     W, Ht = h.width, h.height
+    allowed_ops = allowed_ops or {"transpose", "flip"}
+
     pool: List[Dict[str, Any]] = []
 
-    xs = list(range(W))
-    if bias_to_boundary:
-        xs.sort(key=lambda xx: -_boundary_score_from_zones(W, Ht, zones, min(xx, W - 2)))
+    # transpose anchors
+    anchors_3x3 = [(x, y) for y in range(0, Ht - 2) for x in range(0, W - 2)]
+    if border_to_inner:
+        anchors_3x3.sort(key=lambda p: _center_layer_for_anchor(p[0], p[1], 3, 3, W, Ht))
+    elif bias_to_boundary:
+        anchors_3x3.sort(key=lambda p: -_boundary_score_for_anchor(W, Ht, zones, p[0], p[1], 3, 3))
 
+    fvars = _flip_variants(h)
     tvars = _transpose_variants(h)
-    fvars = [('n', 3, 2), ('s', 3, 2), ('e', 2, 3), ('w', 2, 3)]
 
-    # Transpose scan
-    for y in range(0, Ht - 2):
-        for x in xs:
-            if x > W - 3:
-                continue
-
+    # build transpose moves
+    if "transpose" in allowed_ops:
+        for (x, y) in anchors_3x3:
             random.shuffle(tvars)
             for variant in tvars:
                 mv = {"op": "transpose", "variant": variant, "x": x, "y": y, "w": 3, "h": 3}
                 if try_move_feasible(h, mv):
                     pool.append(mv)
                     break
-
             if len(pool) >= max_moves:
                 return pool
 
-    # Flip scan
-    for (variant, w, hh) in fvars:
-        for y in range(0, Ht - hh + 1):
-            for x in xs:
-                if x > W - w:
-                    continue
+    # build flip moves
+    if "flip" in allowed_ops:
+        for (variant, w, hh) in fvars:
+            anchors = [(x, y) for y in range(0, Ht - hh + 1) for x in range(0, W - w + 1)]
+            if border_to_inner:
+                anchors.sort(key=lambda p: _center_layer_for_anchor(p[0], p[1], w, hh, W, Ht))
+            elif bias_to_boundary:
+                anchors.sort(key=lambda p: -_boundary_score_for_anchor(W, Ht, zones, p[0], p[1], w, hh))
 
+            for (x, y) in anchors:
                 mv = {"op": "flip", "variant": variant, "x": x, "y": y, "w": w, "h": hh}
                 if try_move_feasible(h, mv):
                     pool.append(mv)
-
                 if len(pool) >= max_moves:
                     return pool
 
@@ -317,6 +439,48 @@ def refresh_move_pool(
 # ============================================================
 # Dataset writer (JSONL)
 # ============================================================
+
+def normalize_zone_grid(zone_grid):
+    """
+    Normalize zone labels to 0..K-1.
+
+    """
+    if not zone_grid:
+        return zone_grid
+
+    # Detect 2D grid 
+    is_2d = isinstance(zone_grid[0], list)
+
+    if is_2d:
+        flat = [int(v) for row in zone_grid for v in row]
+    else:
+        flat = [int(v) for v in zone_grid]
+
+    unique = sorted(set(flat))
+    mapping = {old: new for new, old in enumerate(unique)}
+
+    if is_2d:
+        out = [[mapping[int(v)] for v in row] for row in zone_grid]
+    else:
+        out = [mapping[int(v)] for v in zone_grid]
+
+    return out
+
+def flatten_grid(grid):
+    """
+    Flatten a 2D grid into a 1D list.
+
+    """
+    if not grid:
+        return []
+
+    # If already flat, return as-is
+    if not isinstance(grid[0], list):
+        return list(grid)
+
+    return [int(v) for row in grid for v in row]
+
+
 def save_sa_dataset_record(
     dataset_dir: str,
     *,
@@ -329,20 +493,25 @@ def save_sa_dataset_record(
     final_crossings: int,
     best_ops: List[Dict[str, Any]],
     runtime_sec: float,
+    zones: Dict[Point, int],    
 ):
-    
     os.makedirs(dataset_dir, exist_ok=True)
     path = os.path.join(dataset_dir, "Dataset.jsonl")
+
+    # --- zones → grid ---
+    zone_grid = [[zones[(x, y)] for x in range(grid_W)] for y in range(grid_H)]
+    zone_grid = normalize_zone_grid(zone_grid)   
+    zone_grid_flat = flatten_grid(zone_grid)     
+
 
     sequence_ops = []
     for mv in best_ops:
         kind = "T" if mv.get("op") == "transpose" else "F"
-        sequence_ops.append({
-            "kind": kind,
-            "x": int(mv["x"]),
-            "y": int(mv["y"]),
-            "variant": str(mv["variant"]),
-        })
+        sequence_ops.append(
+            {"kind": kind, "x": int(mv["x"]), "y": int(mv["y"]), "variant": str(mv["variant"])}
+        )
+    
+    zone_grid = zones_to_grid(zones, grid_W, grid_H)
 
     rec = {
         "run_id": str(run_id),
@@ -351,9 +520,9 @@ def save_sa_dataset_record(
         "grid_H": int(grid_H),
         "zone_pattern": str(zone_pattern),
         "initial_crossings": int(initial_crossings),
+        "zone_grid": zone_grid_flat,
         "final_crossings": int(final_crossings),
         "sequence_len": int(len(sequence_ops)),
-        "applied_count": int(len(sequence_ops)),
         "sequence_ops": sequence_ops,
         "runtime_sec": float(runtime_sec),
     }
@@ -407,6 +576,94 @@ def plot_cycle(
 
 
 # ============================================================
+# Debug helpers
+# ============================================================
+def debug_print_pattern_keys(h: HamiltonianSTL) -> None:
+    fp = getattr(h, "flip_patterns", None)
+    tp = getattr(h, "transpose_patterns", None)
+
+    if fp is None:
+        fp_keys = None
+    elif hasattr(fp, "keys"):
+        fp_keys = list(fp.keys())
+    else:
+        try:
+            fp_keys = list(fp)
+        except Exception:
+            fp_keys = fp
+
+    if tp is None:
+        tp_keys = None
+    elif hasattr(tp, "keys"):
+        tp_keys = list(tp.keys())
+    else:
+        try:
+            tp_keys = list(tp)
+        except Exception:
+            tp_keys = tp
+
+    #print("[Debug] flip_patterns keys:", fp_keys)
+    #print("[Debug] transpose_patterns keys:", tp_keys)
+
+
+def debug_try_one_flip(h: HamiltonianSTL) -> Dict[str, Any]:
+    fv = _flip_variants(h)
+    variant, w, hh = random.choice(fv)
+    x = random.randint(0, h.width - w)
+    y = random.randint(0, h.height - hh)
+    sub = h.get_subgrid((x, y), (x + w - 1, y + hh - 1))
+    ret = h.flip_subgrid(sub, variant)
+    return {"variant": variant, "w": w, "h": hh, "x": x, "y": y, "ret": ret}
+
+
+def estimate_flip_feasibility(h: HamiltonianSTL, trials: int = 2000) -> int:
+    ok = 0
+    fv = _flip_variants(h)
+    if not fv:
+        return 0
+
+    for _ in range(trials):
+        variant, w, hh = random.choice(fv)
+        x = random.randint(0, h.width - w)
+        y = random.randint(0, h.height - hh)
+        mv = {"op": "flip", "variant": variant, "x": x, "y": y, "w": w, "h": hh}
+        if try_move_feasible(h, mv):
+            ok += 1
+    return ok
+
+
+# ============================================================
+# Op-choice policy (keeps transpose with low probability)
+# ============================================================
+def op_probabilities(i: int, split: int) -> Tuple[float, float]:
+    """
+    Returns (p_flip, p_transpose)
+    Phase 1: almost all transpose (flips often don't exist early).
+    Phase 2: strongly prefer flip, but keep transpose too.
+    """
+    if i < split:
+        return (0.02, 0.98)
+    else:
+        return (0.90, 0.10)
+
+
+def choose_move_from_pool(move_pool: List[Dict[str, Any]], p_flip: float) -> Optional[Dict[str, Any]]:
+    if not move_pool:
+        return None
+    flips = [m for m in move_pool if m.get("op") == "flip"]
+    trans = [m for m in move_pool if m.get("op") == "transpose"]
+
+    r = random.random()
+    if r < p_flip and flips:
+        return random.choice(flips)
+    if trans:
+        return random.choice(trans)
+    if flips:
+        return random.choice(flips)
+    return random.choice(move_pool)
+
+
+# ============================================================
 # SA runner
 # ============================================================
 def run_sa(
@@ -430,6 +687,9 @@ def run_sa(
     reheat_patience: int = 3000,
     reheat_factor: float = 1.5,
     reheat_cap: float = 600.0,
+    # phases
+    transpose_phase_ratio: float = 0.6,
+    border_to_inner: bool = True,
     # ZONES
     zone_mode: str = "left_right",
     # islands
@@ -441,8 +701,10 @@ def run_sa(
     stripe_k: int = 3,
     # voronoi
     voronoi_k: int = 3,
+    # DEBUG
+    debug: bool = False,
 ) -> Tuple[int, List[Dict[str, Any]]]:
-    
+
     random.seed(seed)
     start_time = time.perf_counter()
 
@@ -453,8 +715,12 @@ def run_sa(
     if not is_valid_cycle(h):
         raise RuntimeError("Initial Hamiltonian cycle invalid. Check HamiltonianSTL initialization.")
 
+    if debug:
+        debug_print_pattern_keys(h)
+
     zones, zones_meta = build_zones(
-        width, height,
+        width,
+        height,
         zone_mode=zone_mode,
         seed=seed,
         num_islands=num_islands,
@@ -477,16 +743,30 @@ def run_sa(
     accepted = attempted = rejected = 0
     invalid_moves = apply_fail = 0
 
-    # Reheating state
     best_seen = best_cost
     no_improve = 0
 
     print(f"Initial crossings: {current_cost}")
     print(f"Zone mode: {zone_mode} | meta={zones_meta}")
+    if debug:
+        c0 = estimate_flip_feasibility(h, trials=2000)
+        #print(f"[Flip probe @start] feasible flips in 2000 trials = {c0}")
 
-    # Always allow boundary bias
-    move_pool = refresh_move_pool(h, zones, bias_to_boundary=True, max_moves=pool_max_moves)
-    print(f"[Pool] initial size = {len(move_pool)}")
+    split = int(iterations * float(transpose_phase_ratio))
+    split = max(0, min(iterations, split))
+
+    # Phase 1 pool: transpose-only (fast + flips usually absent)
+    allowed_ops = {"transpose"} if split > 0 else {"transpose", "flip"}
+
+    move_pool = refresh_move_pool(
+        h,
+        zones,
+        bias_to_boundary=True,
+        max_moves=pool_max_moves,
+        allowed_ops=allowed_ops,
+        border_to_inner=border_to_inner,
+    )
+    print(f"[Pool] initial size = {len(move_pool)} | allowed={allowed_ops}")
 
     if plot_live:
         plot_cycle(h, zones, title=f"Initial | crossings={current_cost}")
@@ -495,71 +775,109 @@ def run_sa(
     for i in range(iterations):
         attempted += 1
 
-        # periodic pool refresh
+        # Phase switch: once we enter phase 2, build BOTH ops in the pool,
+        # but choose flips with high probability (transpose still allowed).
+        if i == split:
+            allowed_ops = {"transpose", "flip"}
+            move_pool = refresh_move_pool(
+                h,
+                zones,
+                bias_to_boundary=True,
+                max_moves=pool_max_moves,
+                allowed_ops=allowed_ops,
+                border_to_inner=border_to_inner,
+            )
+            flips = sum(1 for m in move_pool if m.get("op") == "flip")
+            trans = sum(1 for m in move_pool if m.get("op") == "transpose")
+            #print(f"[Phase switch] iter={i} pool={len(move_pool)} flips={flips} trans={trans} allowed={allowed_ops}")
+            if debug:
+                count = estimate_flip_feasibility(h, trials=2000)
+                #print(f"[Flip probe @phase2] feasible flips in 2000 random trials = {count}")
+
+        # Periodic pool refresh
         if i % pool_refresh_period == 0:
-            move_pool = refresh_move_pool(h, zones, bias_to_boundary=True, max_moves=pool_max_moves)
+            # keep transpose-only pool in phase 1, both ops in phase 2
+            allowed_ops = {"transpose"} if i < split else {"transpose", "flip"}
+            move_pool = refresh_move_pool(
+                h,
+                zones,
+                bias_to_boundary=True,  # biases flips toward zone boundary too
+                max_moves=pool_max_moves,
+                allowed_ops=allowed_ops,
+                border_to_inner=border_to_inner,
+            )
             if i % (pool_refresh_period * 10) == 0:
-                print(f"[Pool] iter={i} size={len(move_pool)}")
+                flips = sum(1 for m in move_pool if m.get("op") == "flip")
+                trans = sum(1 for m in move_pool if m.get("op") == "transpose")
+                print(f"[Pool] iter={i} size={len(move_pool)} flips={flips} trans={trans} allowed={allowed_ops}")
+
+        # Optional diagnostics
+        """if debug and i >= split and (not move_pool) and (i % 500 == 0):
+            count = estimate_flip_feasibility(h, trials=2000)
+            #print(f"[Flip probe @empty] feasible flips found in 2000 random trials = {count}")
+            for _ in range(3):
+                print("[Flip debug]", debug_try_one_flip(h))"""
 
         T = dynamic_temperature(i, iterations, Tmin=Tmin, Tmax=Tmax)
 
         prev_H, prev_V = deep_copy(h.H, h.V)
         applied_move: Optional[Dict[str, Any]] = None
 
-        # 1) sample from pool
+        # choose a move from pool with flip preference in phase 2
         if move_pool:
-            mv = random.choice(move_pool)
-            if apply_move(h, mv):
+            p_flip, _ = op_probabilities(i, split)
+            mv = choose_move_from_pool(move_pool, p_flip=p_flip)
+            if mv and apply_move(h, mv):
                 applied_move = mv
             else:
                 apply_fail += 1
                 h.H, h.V = prev_H, prev_V
 
-        # 2) fallback random tries
-        else:
-            for _ in range(max_move_tries):
-                x3 = random.randint(0, width - 3)
-                y3 = random.randint(0, height - 3)
+        # if pool empty / failed, do a small random fallback search 
+        if applied_move is None:
+            local_tries = min(40, int(max_move_tries))  
 
-                if random.random() < 0.5:
-                    variant = random.choice(_transpose_variants(h))
-                    mv_try = {"op": "transpose", "variant": variant, "x": x3, "y": y3, "w": 3, "h": 3}
-                else:
-                    variants = {'n': (3, 2), 's': (3, 2), 'e': (2, 3), 'w': (2, 3)}
-                    variant, (w, hh) = random.choice(list(variants.items()))
+            for _ in range(local_tries):
+                p_flip, _ = op_probabilities(i, split)
+                choose_flip = (random.random() < p_flip)
+
+                if choose_flip:
+                    fv = _flip_variants(h)
+                    variant, w, hh = random.choice(fv)
                     x = random.randint(0, width - w)
                     y = random.randint(0, height - hh)
                     mv_try = {"op": "flip", "variant": variant, "x": x, "y": y, "w": w, "h": hh}
+                else:
+                    x3 = random.randint(0, width - 3)
+                    y3 = random.randint(0, height - 3)
+                    variant = random.choice(_transpose_variants(h))
+                    mv_try = {"op": "transpose", "variant": variant, "x": x3, "y": y3, "w": 3, "h": 3}
 
-                if not apply_move(h, mv_try):
-                    apply_fail += 1
-                    h.H, h.V = prev_H, prev_V
-                    continue
+                if apply_move(h, mv_try):
+                    applied_move = mv_try
+                    break
 
-                applied_move = mv_try
-                break
-
-            if applied_move is None:
-                invalid_moves += 1
+                apply_fail += 1
                 h.H, h.V = prev_H, prev_V
 
-        # acceptance step
         if applied_move is None:
+            invalid_moves += 1
             no_improve += 1
+            h.H, h.V = prev_H, prev_V
+            # continue SA loop
         else:
             new_cost = compute_crossings(h, zones)
             delta = new_cost - current_cost
 
-            # Metropolis acceptance
             if delta < 0:
                 accept = True
             else:
                 if T <= 0:
                     accept = False
                 else:
-                    x = -float(delta) / float(T)
-                    x = max(-700.0, min(700.0, x))
-                    accept = (random.random() < math.exp(x))
+                    xexp = -float(delta) / float(T)
+                    xexp = max(-700.0, min(700.0, xexp))
+                    accept = (random.random() < math.exp(xexp))
 
             if accept:
                 current_cost = new_cost
@@ -584,7 +902,6 @@ def run_sa(
                     plot_cycle(h, zones, title=f"Iter {i} | T={T:.3f} | cost={current_cost} | best={best_cost}")
                     plt.pause(pause_seconds)
 
-                # stall tracking
                 if best_cost < best_seen:
                     best_seen = best_cost
                     no_improve = 0
@@ -600,15 +917,28 @@ def run_sa(
         if no_improve >= reheat_patience:
             Tmax = min(reheat_cap, Tmax * reheat_factor)
             no_improve = 0
-            move_pool = refresh_move_pool(h, zones, bias_to_boundary=True, max_moves=pool_max_moves)
-            print(f"[Reheat] iter={i} Tmax={Tmax:.2f} pool={len(move_pool)}")
+
+            allowed_ops = {"transpose"} if i < split else {"transpose", "flip"}
+            move_pool = refresh_move_pool(
+                h,
+                zones,
+                bias_to_boundary=True,
+                max_moves=pool_max_moves,
+                allowed_ops=allowed_ops,
+                border_to_inner=border_to_inner,
+            )
+            flips = sum(1 for m in move_pool if m.get("op") == "flip")
+            trans = sum(1 for m in move_pool if m.get("op") == "transpose")
+            print(f"[Reheat] iter={i} Tmax={Tmax:.2f} pool={len(move_pool)} flips={flips} trans={trans} allowed={allowed_ops}")
 
         if i % 500 == 0:
+            flips = sum(1 for m in move_pool if m.get("op") == "flip")
+            trans = sum(1 for m in move_pool if m.get("op") == "transpose")
             print(
                 f"Iter {i}: T={T:.3f}, Tmax={Tmax:.2f}, Cost={current_cost}, Best={best_cost}, "
                 f"Accepted={accepted}/{attempted}, Rejected={rejected}, "
                 f"Invalid={invalid_moves}, ApplyFail={apply_fail}, "
-                f"Pool={len(move_pool)}, NoImprove={no_improve}"
+                f"Pool={len(move_pool)} (F={flips},T={trans}), NoImprove={no_improve}"
             )
 
     # restore best
@@ -619,6 +949,14 @@ def run_sa(
     runtime_sec = time.perf_counter() - start_time
     print(f"Final best crossings: {best_cost}")
     print(f"[SA] seed={seed} runtime = {runtime_sec:.2f} seconds")
+
+    """print("\nBest operation sequence (best_ops):")
+    for k, mv in enumerate(best_ops):
+        print(
+            f"{k:04d} | {mv.get('op')} | var={mv.get('variant')} | "
+            f"x={mv.get('x')} y={mv.get('y')} w={mv.get('w')} h={mv.get('h')}"
+        )"""
+    print("")
 
     run_id = f"sa_{zone_mode}_W{width}H{height}_seed{seed}_{int(time.time())}"
     if write_dataset:
@@ -633,6 +971,7 @@ def run_sa(
             final_crossings=best_cost,
             best_ops=best_ops,
             runtime_sec=runtime_sec,
+            zones=zones,
         )
 
     if plot_live:
@@ -661,20 +1000,20 @@ def run_sa_multiple_seeds(
     reheat_patience=3000,
     reheat_factor=1.5,
     reheat_cap=600.0,
-    # islands
+    transpose_phase_ratio: float = 0.6,
+    border_to_inner: bool = True,
     num_islands: int = 3,
     island_size: int = 8,
     allow_touch: bool = False,
-    # stripes
     stripe_direction: str = "v",
     stripe_k: int = 3,
-    # voronoi
     voronoi_k: int = 3,
+    debug: bool = False,
 ) -> List[Dict[str, Any]]:
-    
+
     results: List[Dict[str, Any]] = []
     for s in seeds:
-        seed_start = time.perf_counter() 
+        seed_start = time.perf_counter()
         best_c, best_ops = run_sa(
             width=width,
             height=height,
@@ -700,76 +1039,24 @@ def run_sa_multiple_seeds(
             reheat_patience=reheat_patience,
             reheat_factor=reheat_factor,
             reheat_cap=reheat_cap,
+            transpose_phase_ratio=transpose_phase_ratio,
+            border_to_inner=border_to_inner,
+            debug=debug,
         )
         seed_runtime = time.perf_counter() - seed_start
-        results.append({
-            "seed": int(s),
-            "best_crossings": int(best_c),
-            "sequence_len": int(len(best_ops)),
-            "runtime_sec": float(seed_runtime),
-        })
+        results.append(
+            {"seed": int(s), "best_crossings": int(best_c), "sequence_len": int(len(best_ops)), "runtime_sec": float(seed_runtime)}
+        )
         print(f"[SA multi] seed={s} best_crossings={best_c} sequence_len={len(best_ops)} runtime={seed_runtime:.2f}s")
 
     return results
 
 
 # ============================================================
-# MAin
+# MAIN
 # ============================================================
 if __name__ == "__main__":
-    # ============================================================
-    # Single-run
-    # ============================================================
-    """run_sa(
-        # grid
-        width=32,
-        height=32,
-
-        # SA schedule
-        iterations=5000,
-        Tmax=80.0,
-        Tmin=0.5,
-        seed=0,
-
-        # visualization
-        plot_live=True,
-        show_every_accepted=200,
-        pause_seconds=0.01,
-
-        # dataset
-        dataset_dir="Dataset",
-        write_dataset=True,
-
-        # pool / attempts
-        max_move_tries=25,
-        pool_refresh_period=250,
-        pool_max_moves=5000,
-
-        # reheating
-        reheat_patience=3000,
-        reheat_factor=1.5,
-        reheat_cap=600.0,
-
-        # zone pattern
-        zone_mode="left_right",   # "left_right" | "islands" | "stripes" | "voronoi"
-
-        # islands params (used only if zone_mode="islands")
-        num_islands=3,
-        island_size=8,
-        allow_touch=False,
-
-        # stripes params (used only if zone_mode="stripes")
-        stripe_direction="v",
-        stripe_k=3,
-
-        # voronoi params (used only if zone_mode="voronoi")
-        voronoi_k=3,
-    )"""
-
-    # ============================================================
-    # Multi-run
-    # ============================================================
-    seeds = list(range(1))
+    seeds = list(range(30))
     run_sa_multiple_seeds(
         seeds,
 
@@ -792,6 +1079,9 @@ if __name__ == "__main__":
         reheat_factor=1.5,
         reheat_cap=600.0,
 
+        transpose_phase_ratio=0.6,
+        border_to_inner=True,
+
         # zone pattern
         zone_mode="left_right",   # "left_right" | "islands" | "stripes" | "voronoi"
 
@@ -813,4 +1103,6 @@ if __name__ == "__main__":
 
         # voronoi params (used only if zone_mode="voronoi")
         voronoi_k=3,
+
+        debug=False,
     )
