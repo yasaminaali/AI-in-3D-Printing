@@ -1,0 +1,43 @@
+# Kazi's Machine Configuration
+# Handles 128x128 islands/voronoi and 256x256 grids
+
+machine_id: kazi
+num_workers: 8
+output_dir: output/kazi
+
+assignments:
+  # 128x128 grid - islands and voronoi (complement istiaq's work)
+  - grid: [128, 128]
+    patterns:
+      - islands
+      - voronoi
+    sa_configs:
+      - long
+      - extra_long
+    seeds:
+      islands: 250
+      voronoi: 400
+    zone_params:
+      num_islands: 5
+      island_size: 16
+      voronoi_k: 5
+
+  # 256x256 grid - all patterns (fewer seeds due to runtime)
+  - grid: [256, 256]
+    patterns:
+      - left_right
+      - stripes
+      - islands
+      - voronoi
+    sa_configs:
+      - extra_long
+    seeds:
+      left_right: 200
+      stripes: 150
+      islands: 100
+      voronoi: 150
+    zone_params:
+      num_islands: 6
+      island_size: 24
+      stripe_k: 6
+      voronoi_k: 6

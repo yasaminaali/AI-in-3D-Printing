@@ -1,0 +1,69 @@
+# Global SA Configuration Presets
+# These presets define SA algorithm parameters for different optimization depths
+
+sa_configs:
+  # Increased iterations to ensure phase 2 (flips) is reached
+  # Phase 2 starts at 60% of iterations (transpose_phase_ratio=0.6)
+  short:
+    iterations: 3000
+    Tmax: 60.0
+    Tmin: 0.5
+    max_move_tries: 200
+    pool_refresh_period: 250
+    pool_max_moves: 5000
+    reheat_patience: 1500
+    reheat_factor: 1.5
+    reheat_cap: 600.0
+    transpose_phase_ratio: 0.6
+    border_to_inner: true
+
+  medium:
+    iterations: 5000
+    Tmax: 80.0
+    Tmin: 0.5
+    max_move_tries: 200
+    pool_refresh_period: 250
+    pool_max_moves: 5000
+    reheat_patience: 1500
+    reheat_factor: 1.5
+    reheat_cap: 600.0
+    transpose_phase_ratio: 0.6
+    border_to_inner: true
+
+  long:
+    iterations: 10000
+    Tmax: 100.0
+    Tmin: 0.3
+    max_move_tries: 200
+    pool_refresh_period: 250
+    pool_max_moves: 5000
+    reheat_patience: 2000
+    reheat_factor: 1.5
+    reheat_cap: 600.0
+    transpose_phase_ratio: 0.6
+    border_to_inner: true
+
+  extra_long:
+    iterations: 20000
+    Tmax: 120.0
+    Tmin: 0.2
+    max_move_tries: 200
+    pool_refresh_period: 250
+    pool_max_moves: 5000
+    reheat_patience: 3000
+    reheat_factor: 1.5
+    reheat_cap: 600.0
+    transpose_phase_ratio: 0.6
+    border_to_inner: true
+
+# Default zone parameters (can be overridden per-assignment)
+default_zone_params:
+  # Islands
+  num_islands: 3
+  island_size: 8
+  allow_touch: false
+  # Stripes
+  stripe_direction: "v"
+  stripe_k: 3
+  # Voronoi
+  voronoi_k: 3

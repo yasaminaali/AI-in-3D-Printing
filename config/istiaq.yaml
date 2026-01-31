@@ -1,0 +1,39 @@
+# Istiaq's Machine Configuration
+# Handles 64x64 islands/voronoi and 128x128 grids
+
+machine_id: istiaq
+num_workers: 8
+output_dir: output/istiaq
+
+assignments:
+  # 64x64 grid - islands and voronoi (complement yasamin's work)
+  - grid: [64, 64]
+    patterns:
+      - islands
+      - voronoi
+    sa_configs:
+      - medium
+      - long
+      - extra_long
+    seeds:
+      islands: 350
+      voronoi: 500
+    zone_params:
+      num_islands: 4
+      island_size: 12
+      voronoi_k: 4
+
+  # 128x128 grid - all patterns
+  - grid: [128, 128]
+    patterns:
+      - left_right
+      - stripes
+    sa_configs:
+      - long
+      - extra_long
+    seeds:
+      left_right: 800
+      stripes: 300
+    zone_params:
+      stripe_k: 5
+      stripe_direction: "v"
