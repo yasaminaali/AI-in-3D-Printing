@@ -59,8 +59,8 @@ class Checkpoint:
                     })
                     return data
             except (json.JSONDecodeError, IOError) as e:
-                print(f"[Checkpoint] Warning: Could not load {self.checkpoint_path}: {e}")
-                print("[Checkpoint] Starting fresh checkpoint")
+                # Silently start fresh checkpoint, error will be logged by caller if needed
+                pass
 
         return {
             "completed_tasks": {},
@@ -87,7 +87,7 @@ class Checkpoint:
                 json.dump(self._data, f, indent=2)
             os.replace(tmp_path, self.checkpoint_path)
         except IOError as e:
-            print(f"[Checkpoint] Error saving checkpoint: {e}")
+            # Silently handle error, will be retried on next save
             if os.path.exists(tmp_path):
                 try:
                     os.remove(tmp_path)

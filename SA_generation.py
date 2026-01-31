@@ -602,7 +602,7 @@ def save_sa_dataset_record(
     with open(path, "a", encoding="utf-8") as f:
         f.write(json.dumps(rec) + "\n")
 
-    print(f"[Dataset] appended 1 record -> {path}")
+    # print(f"[Dataset] appended 1 record -> {path}")
 
 
 # ============================================================
@@ -818,8 +818,8 @@ def run_sa(
     best_seen = best_cost
     no_improve = 0
 
-    print(f"Initial crossings: {current_cost}")
-    print(f"Zone mode: {zone_mode} | meta={zones_meta}")
+    # print(f"Initial crossings: {current_cost}")
+    # print(f"Zone mode: {zone_mode} | meta={zones_meta}")
     if debug:
         c0 = estimate_flip_feasibility(h, trials=2000)
         #print(f"[Flip probe @start] feasible flips in 2000 trials = {c0}")
@@ -838,7 +838,7 @@ def run_sa(
         allowed_ops=allowed_ops,
         border_to_inner=border_to_inner,
     )
-    print(f"[Pool] initial size = {len(move_pool)} | allowed={allowed_ops}")
+    # [Pool] initial size = {len(move_pool)} | allowed={allowed_ops}
 
     if plot_live:
         plot_cycle(h, zones, title=f"Initial | crossings={current_cost}")
@@ -881,7 +881,7 @@ def run_sa(
             if i % (pool_refresh_period * 10) == 0:
                 flips = sum(1 for m in move_pool if m.get("op") == "flip")
                 trans = sum(1 for m in move_pool if m.get("op") == "transpose")
-                print(f"[Pool] iter={i} size={len(move_pool)} flips={flips} trans={trans} allowed={allowed_ops}")
+                # [Pool] iter={i} size={len(move_pool)} flips={flips} trans={trans} allowed={allowed_ops}
 
         # Optional diagnostics
         """if debug and i >= split and (not move_pool) and (i % 500 == 0):
@@ -1006,17 +1006,17 @@ def run_sa(
             )
             flips = sum(1 for m in move_pool if m.get("op") == "flip")
             trans = sum(1 for m in move_pool if m.get("op") == "transpose")
-            print(f"[Reheat] iter={i} Tmax={Tmax:.2f} pool={len(move_pool)} flips={flips} trans={trans} allowed={allowed_ops}")
+            # print(f"[Reheat] iter={i} Tmax={Tmax:.2f} pool={len(move_pool)} flips={flips} trans={trans} allowed={allowed_ops}")
 
         if i % 500 == 0:
             flips = sum(1 for m in move_pool if m.get("op") == "flip")
             trans = sum(1 for m in move_pool if m.get("op") == "transpose")
-            print(
-                f"Iter {i}: T={T:.3f}, Tmax={Tmax:.2f}, Cost={current_cost}, Best={best_cost}, "
-                f"Accepted={accepted}/{attempted}, Rejected={rejected}, "
-                f"Invalid={invalid_moves}, ApplyFail={apply_fail}, "
-                f"Pool={len(move_pool)} (F={flips},T={trans}), NoImprove={no_improve}"
-            )
+            # print(
+            #     f"Iter {i}: T={T:.3f}, Tmax={Tmax:.2f}, Cost={current_cost}, Best={best_cost}, "
+            #     f"Accepted={accepted}/{attempted}, Rejected={rejected}, "
+            #     f"Invalid={invalid_moves}, ApplyFail={apply_fail}, "
+            #     f"Pool={len(move_pool)} (F={flips},T={trans}), NoImprove={no_improve}"
+            # )
 
 
     # restore best
@@ -1025,8 +1025,8 @@ def run_sa(
         raise RuntimeError("Best state invalid at end (should not happen).")
 
     runtime_sec = time.perf_counter() - start_time
-    print(f"Final best crossings: {best_cost}")
-    print(f"[SA] seed={seed} runtime = {runtime_sec:.2f} seconds")
+    # print(f"Final best crossings: {best_cost}")
+    # print(f"[SA] seed={seed} runtime = {runtime_sec:.2f} seconds")
 
     """print("\nBest operation sequence (best_ops):")
     for k, mv in enumerate(best_ops):
@@ -1034,7 +1034,7 @@ def run_sa(
             f"{k:04d} | {mv.get('op')} | var={mv.get('variant')} | "
             f"x={mv.get('x')} y={mv.get('y')} w={mv.get('w')} h={mv.get('h')}"
         )"""
-    print("")
+    # print("")
 
     run_id = f"sa_{zone_mode}_W{width}H{height}_seed{seed}_{int(time.time())}"
     if write_dataset:
@@ -1125,7 +1125,7 @@ def run_sa_multiple_seeds(
         results.append(
             {"seed": int(s), "best_crossings": int(best_c), "sequence_len": int(len(best_ops)), "runtime_sec": float(seed_runtime)}
         )
-        print(f"[SA multi] seed={s} best_crossings={best_c} sequence_len={len(best_ops)} runtime={seed_runtime:.2f}s")
+        # print(f"[SA multi] seed={s} best_crossings={best_c} sequence_len={len(best_ops)} runtime={seed_runtime:.2f}s")
 
     return results
 

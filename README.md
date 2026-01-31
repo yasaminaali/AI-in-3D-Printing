@@ -219,10 +219,13 @@ assignments:
 
 ```bash
 # Install dependencies
-pip install matplotlib numpy pyyaml
+pip install matplotlib numpy pyyaml tqdm
+
+# Or install all dependencies from requirements.txt
+pip install -r requirements.txt
 
 # Verify installation
-python -c "import matplotlib, numpy, yaml; print('OK')"
+python -c "import matplotlib, numpy, yaml, tqdm; print('OK')"
 ```
 
 #### Step 2: Run the Pipeline
@@ -252,8 +255,7 @@ python run_pipeline.py yasamin --progress-interval 30
 | `--workers` | Number of parallel processes | From config or CPU count |
 | `--config-dir` | Config directory path | `config` |
 | `--retry-failed` | Retry previously failed tasks | False |
-| `--progress-interval` | Seconds between progress logs | 60 |
-| `--status` | Show status and exit | False |
+| `--status` | Show status and exit without running | False |
 
 ### Multiprocessing Architecture
 
@@ -289,28 +291,86 @@ The pipeline uses Python's `multiprocessing.Pool` for parallel execution:
 
 ### Monitoring Progress
 
-During execution, you'll see output like:
+The pipeline features a **live progress bar** with real-time statistics using `tqdm`. During execution, you'll see:
 
 ```
-=== SA Dataset Generation Pipeline ===
-Machine: yasamin
-Config dir: config
+════════════════════════════════════════════════════════════
+  SA Dataset Generation Pipeline
+════════════════════════════════════════════════════════════
 
-[Runner] Machine: yasamin
-[Runner] Workers: 8
-[Runner] Total tasks: 12150
-[Runner] Already completed: 0
-[Runner] Pending: 12150
-[Runner] Task breakdown:
-  By grid: {'32x32': 12150}
+  Machine:     yasamin
+  Workers:     8
+  Total:       12,150 tasks
+  Completed:   0 tasks
+  Pending:     12,150 tasks
+
+Task Breakdown:
+  By grid:    {'32x32': 12150}
   By pattern: {'left_right': 6900, 'stripes': 1800, 'islands': 1350, 'voronoi': 2100}
-  By config: {'short': 4050, 'medium': 4050, 'long': 4050}
+  By config:  {'short': 4050, 'medium': 4050, 'long': 4050}
 
-[Runner] Starting 8 workers...
-[OK] yasamin_32x32_left_right_short_seed0 - crossings=4 time=12.5s
-[OK] yasamin_32x32_left_right_short_seed1 - crossings=6 time=11.8s
-...
-[Progress] 1000/12150 completed (8.2%) | Failed: 0 | Elapsed: 2h 15m | ETA: 25h 10m
+**yasamin**: 100%|████████████████████| 12,150/12,150 [4:32:15<0:00:00, 0.74 tasks/s]
+
+═══ Pipeline Statistics ═══
+  Machine:        yasamin
+  Workers:        8
+  Total Tasks:    12,150
+
+  Completed:      8,250 (68.0%)
+  Failed:         0
+  Remaining:      3,900
+
+  Elapsed:        4h 32m
+  ETA:            2h 15m
+  Rate:           0.74 tasks/sec
+  Avg Task Time:  45.2s
+
+  Avg Improvement: 65.3%
+
+  Active Tasks (8):
+    • yasamin_32x32_left_right_short_... (12.5s)
+    ... and 7 more
+═══════════════════════════
+```
+
+**Features:**
+- **Live progress bar** with percentage and visual indicator
+- **Real-time statistics** updated every second
+- **ETA calculation** based on current processing rate
+- **Active task tracking** showing currently running tasks
+- **Performance metrics** including average task time and improvement rate
+- **Color-coded output** for better readability (when terminal supports it)
+- **File logging** - all logs go to `output/{machine_id}/logs/{machine_id}_{timestamp}.log`
+
+### Logging
+
+All output is logged to files. The console only shows the Rich UI progress display.
+
+**Log file location:**
+```
+output/{machine_id}/logs/{machine_id}_{timestamp}.log
+```
+
+**Example:**
+```
+output/yasamin/logs/yasamin_20240131_143022.log
+```
+
+**Log contents:**
+- Task start/completion messages
+- Crossings and runtime information
+- Errors and warnings
+- Final summary statistics
+- Checkpoint operations
+
+**Sample log output:**
+```
+2024-01-31 14:30:15 - INFO - Starting pipeline for yasamin with 8 workers
+2024-01-31 14:30:15 - INFO - Total tasks: 12150
+2024-01-31 14:30:22 - INFO - Task completed: yasamin_32x32_left_right_short_seed0 | crossings=4 | time=12.50s
+2024-01-31 14:35:30 - INFO - Run Complete!
+2024-01-31 14:35:30 - INFO - Elapsed: 5m 15s
+2024-01-31 14:35:30 - INFO - Completed: 100 (this run)
 ```
 
 ### Checkpoint and Resume

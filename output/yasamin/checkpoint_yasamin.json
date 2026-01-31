@@ -639,13 +639,413 @@
       "final_crossings": 18,
       "runtime_sec": 15.894020318984985,
       "timestamp": 1769847043.8479252
+    },
+    "yasamin_32x32_left_right_short_seed135": {
+      "final_crossings": 18,
+      "runtime_sec": 18.696986436843872,
+      "timestamp": 1769847253.3173714
+    },
+    "yasamin_32x32_left_right_short_seed129": {
+      "final_crossings": 16,
+      "runtime_sec": 18.816681623458862,
+      "timestamp": 1769847253.3579583
+    },
+    "yasamin_32x32_left_right_short_seed128": {
+      "final_crossings": 18,
+      "runtime_sec": 19.430726289749146,
+      "timestamp": 1769847253.9254131
+    },
+    "yasamin_32x32_left_right_short_seed134": {
+      "final_crossings": 16,
+      "runtime_sec": 19.39914560317993,
+      "timestamp": 1769847253.9868088
+    },
+    "yasamin_32x32_left_right_short_seed133": {
+      "final_crossings": 18,
+      "runtime_sec": 19.466498374938965,
+      "timestamp": 1769847254.0434802
+    },
+    "yasamin_32x32_left_right_short_seed131": {
+      "final_crossings": 18,
+      "runtime_sec": 19.652345180511475,
+      "timestamp": 1769847254.2290502
+    },
+    "yasamin_32x32_left_right_short_seed132": {
+      "final_crossings": 14,
+      "runtime_sec": 19.93868350982666,
+      "timestamp": 1769847254.5155368
+    },
+    "yasamin_32x32_left_right_short_seed130": {
+      "final_crossings": 18,
+      "runtime_sec": 19.95893096923828,
+      "timestamp": 1769847254.531907
+    },
+    "yasamin_32x32_left_right_short_seed136": {
+      "final_crossings": 18,
+      "runtime_sec": 20.019782781600952,
+      "timestamp": 1769847526.100622
+    },
+    "yasamin_32x32_left_right_short_seed143": {
+      "final_crossings": 18,
+      "runtime_sec": 19.842839241027832,
+      "timestamp": 1769847526.1513286
+    },
+    "yasamin_32x32_left_right_short_seed142": {
+      "final_crossings": 16,
+      "runtime_sec": 20.218615293502808,
+      "timestamp": 1769847526.4556625
+    },
+    "yasamin_32x32_left_right_short_seed140": {
+      "final_crossings": 18,
+      "runtime_sec": 20.350130796432495,
+      "timestamp": 1769847526.489966
+    },
+    "yasamin_32x32_left_right_short_seed137": {
+      "final_crossings": 18,
+      "runtime_sec": 20.424076557159424,
+      "timestamp": 1769847526.5199187
+    },
+    "yasamin_32x32_left_right_short_seed138": {
+      "final_crossings": 16,
+      "runtime_sec": 20.50190258026123,
+      "timestamp": 1769847526.6266356
+    },
+    "yasamin_32x32_left_right_short_seed141": {
+      "final_crossings": 16,
+      "runtime_sec": 21.006484031677246,
+      "timestamp": 1769847527.218858
+    },
+    "yasamin_32x32_left_right_short_seed139": {
+      "final_crossings": 16,
+      "runtime_sec": 21.68255114555359,
+      "timestamp": 1769847527.8127892
+    },
+    "yasamin_32x32_left_right_short_seed144": {
+      "final_crossings": 18,
+      "runtime_sec": 19.928646564483643,
+      "timestamp": 1769847546.0295637
+    },
+    "yasamin_32x32_left_right_short_seed146": {
+      "final_crossings": 14,
+      "runtime_sec": 19.805519580841064,
+      "timestamp": 1769847546.2614834
+    },
+    "yasamin_32x32_left_right_short_seed147": {
+      "final_crossings": 18,
+      "runtime_sec": 19.95320415496826,
+      "timestamp": 1769847546.4434252
+    },
+    "yasamin_32x32_left_right_short_seed145": {
+      "final_crossings": 16,
+      "runtime_sec": 20.392631769180298,
+      "timestamp": 1769847546.5444355
+    },
+    "yasamin_32x32_left_right_short_seed148": {
+      "final_crossings": 16,
+      "runtime_sec": 20.16447925567627,
+      "timestamp": 1769847546.6847312
+    },
+    "yasamin_32x32_left_right_short_seed149": {
+      "final_crossings": 18,
+      "runtime_sec": 20.35240077972412,
+      "timestamp": 1769847546.9793892
+    },
+    "yasamin_32x32_left_right_short_seed151": {
+      "final_crossings": 16,
+      "runtime_sec": 19.461723566055298,
+      "timestamp": 1769847547.2747867
+    },
+    "yasamin_32x32_left_right_short_seed150": {
+      "final_crossings": 18,
+      "runtime_sec": 20.33624243736267,
+      "timestamp": 1769847547.5554695
+    },
+    "yasamin_32x32_left_right_short_seed152": {
+      "final_crossings": 16,
+      "runtime_sec": 18.484559774398804,
+      "timestamp": 1769848459.903646
+    },
+    "yasamin_32x32_left_right_short_seed154": {
+      "final_crossings": 16,
+      "runtime_sec": 15.442648649215698,
+      "timestamp": 1769848914.0015244
+    },
+    "yasamin_32x32_left_right_short_seed153": {
+      "final_crossings": 16,
+      "runtime_sec": 15.914330005645752,
+      "timestamp": 1769848914.4580405
+    },
+    "yasamin_32x32_left_right_short_seed155": {
+      "final_crossings": 18,
+      "runtime_sec": 14.185202360153198,
+      "timestamp": 1769848928.18697
+    },
+    "yasamin_32x32_left_right_short_seed156": {
+      "final_crossings": 16,
+      "runtime_sec": 14.837998867034912,
+      "timestamp": 1769848929.2962544
+    },
+    "yasamin_32x32_left_right_short_seed157": {
+      "final_crossings": 14,
+      "runtime_sec": 15.144038915634155,
+      "timestamp": 1769848943.3312755
+    },
+    "yasamin_32x32_left_right_short_seed158": {
+      "final_crossings": 16,
+      "runtime_sec": 15.045398950576782,
+      "timestamp": 1769848944.3418822
+    },
+    "yasamin_32x32_left_right_short_seed159": {
+      "final_crossings": 16,
+      "runtime_sec": 14.900401830673218,
+      "timestamp": 1769848958.2318583
+    },
+    "yasamin_32x32_left_right_short_seed160": {
+      "final_crossings": 18,
+      "runtime_sec": 14.782028675079346,
+      "timestamp": 1769848959.1241164
+    },
+    "yasamin_32x32_left_right_short_seed161": {
+      "final_crossings": 16,
+      "runtime_sec": 15.568892240524292,
+      "timestamp": 1769849190.7819624
+    },
+    "yasamin_32x32_left_right_short_seed162": {
+      "final_crossings": 18,
+      "runtime_sec": 15.878728151321411,
+      "timestamp": 1769849191.1392334
+    },
+    "yasamin_32x32_left_right_short_seed163": {
+      "final_crossings": 14,
+      "runtime_sec": 14.706107378005981,
+      "timestamp": 1769849205.4883282
+    },
+    "yasamin_32x32_left_right_short_seed164": {
+      "final_crossings": 16,
+      "runtime_sec": 14.658067226409912,
+      "timestamp": 1769849205.7975423
+    },
+    "yasamin_32x32_left_right_short_seed165": {
+      "final_crossings": 16,
+      "runtime_sec": 14.965176105499268,
+      "timestamp": 1769849220.4537132
+    },
+    "yasamin_32x32_left_right_short_seed166": {
+      "final_crossings": 16,
+      "runtime_sec": 15.491599798202515,
+      "timestamp": 1769849407.5792084
+    },
+    "yasamin_32x32_left_right_short_seed167": {
+      "final_crossings": 14,
+      "runtime_sec": 15.812719345092773,
+      "timestamp": 1769849407.935137
+    },
+    "yasamin_32x32_left_right_short_seed168": {
+      "final_crossings": 14,
+      "runtime_sec": 15.18010139465332,
+      "timestamp": 1769849422.7595375
+    },
+    "yasamin_32x32_left_right_short_seed169": {
+      "final_crossings": 18,
+      "runtime_sec": 14.827768325805664,
+      "timestamp": 1769849422.7631435
+    },
+    "yasamin_32x32_left_right_short_seed171": {
+      "final_crossings": 18,
+      "runtime_sec": 14.833012342453003,
+      "timestamp": 1769849437.5963416
+    },
+    "yasamin_32x32_left_right_short_seed170": {
+      "final_crossings": 16,
+      "runtime_sec": 15.293340921401978,
+      "timestamp": 1769849438.0530868
+    },
+    "yasamin_32x32_left_right_short_seed172": {
+      "final_crossings": 16,
+      "runtime_sec": 15.523031234741211,
+      "timestamp": 1769849453.119604
+    },
+    "yasamin_32x32_left_right_short_seed173": {
+      "final_crossings": 16,
+      "runtime_sec": 16.035916566848755,
+      "timestamp": 1769849454.089227
+    },
+    "yasamin_32x32_left_right_short_seed174": {
+      "final_crossings": 16,
+      "runtime_sec": 15.389883995056152,
+      "timestamp": 1769849468.5097113
+    },
+    "yasamin_32x32_left_right_short_seed175": {
+      "final_crossings": 18,
+      "runtime_sec": 15.68418550491333,
+      "timestamp": 1769849469.7736187
+    },
+    "yasamin_32x32_left_right_short_seed176": {
+      "final_crossings": 16,
+      "runtime_sec": 16.039198875427246,
+      "timestamp": 1769849484.549149
+    },
+    "yasamin_32x32_left_right_short_seed177": {
+      "final_crossings": 16,
+      "runtime_sec": 15.61132526397705,
+      "timestamp": 1769849485.3851624
+    },
+    "yasamin_32x32_left_right_short_seed178": {
+      "final_crossings": 16,
+      "runtime_sec": 15.191632986068726,
+      "timestamp": 1769849499.7411356
+    },
+    "yasamin_32x32_left_right_short_seed179": {
+      "final_crossings": 14,
+      "runtime_sec": 15.707252264022827,
+      "timestamp": 1769849501.092619
+    },
+    "yasamin_32x32_left_right_short_seed180": {
+      "final_crossings": 14,
+      "runtime_sec": 15.06315803527832,
+      "timestamp": 1769849514.8044925
+    },
+    "yasamin_32x32_left_right_short_seed181": {
+      "final_crossings": 18,
+      "runtime_sec": 14.991886377334595,
+      "timestamp": 1769849516.0848076
+    },
+    "yasamin_32x32_left_right_short_seed182": {
+      "final_crossings": 20,
+      "runtime_sec": 14.719874858856201,
+      "timestamp": 1769849529.5245702
+    },
+    "yasamin_32x32_left_right_short_seed183": {
+      "final_crossings": 18,
+      "runtime_sec": 14.888314723968506,
+      "timestamp": 1769849530.9733255
+    },
+    "yasamin_32x32_left_right_short_seed184": {
+      "final_crossings": 16,
+      "runtime_sec": 15.28488802909851,
+      "timestamp": 1769849544.809694
+    },
+    "yasamin_32x32_left_right_short_seed185": {
+      "final_crossings": 16,
+      "runtime_sec": 15.670649528503418,
+      "timestamp": 1769849546.644416
+    },
+    "yasamin_32x32_left_right_short_seed186": {
+      "final_crossings": 18,
+      "runtime_sec": 15.016788482666016,
+      "timestamp": 1769849634.7453454
+    },
+    "yasamin_32x32_left_right_short_seed187": {
+      "final_crossings": 18,
+      "runtime_sec": 15.81347107887268,
+      "timestamp": 1769849635.5738158
+    },
+    "yasamin_32x32_left_right_short_seed188": {
+      "final_crossings": 18,
+      "runtime_sec": 14.884436845779419,
+      "timestamp": 1769849649.6300206
+    },
+    "yasamin_32x32_left_right_short_seed189": {
+      "final_crossings": 16,
+      "runtime_sec": 15.149346590042114,
+      "timestamp": 1769849650.7234054
+    },
+    "yasamin_32x32_left_right_short_seed190": {
+      "final_crossings": 18,
+      "runtime_sec": 14.76603388786316,
+      "timestamp": 1769849664.3962562
+    },
+    "yasamin_32x32_left_right_short_seed191": {
+      "final_crossings": 18,
+      "runtime_sec": 14.835449695587158,
+      "timestamp": 1769849665.559065
+    },
+    "yasamin_32x32_left_right_short_seed192": {
+      "final_crossings": 16,
+      "runtime_sec": 15.051272869110107,
+      "timestamp": 1769849679.4477417
+    },
+    "yasamin_32x32_left_right_short_seed193": {
+      "final_crossings": 18,
+      "runtime_sec": 15.156291961669922,
+      "timestamp": 1769849680.7155747
+    },
+    "yasamin_32x32_left_right_short_seed194": {
+      "final_crossings": 18,
+      "runtime_sec": 15.316883563995361,
+      "timestamp": 1769849694.7648244
+    },
+    "yasamin_32x32_left_right_short_seed195": {
+      "final_crossings": 18,
+      "runtime_sec": 15.034912109375,
+      "timestamp": 1769849695.7507646
+    },
+    "yasamin_32x32_left_right_short_seed196": {
+      "final_crossings": 16,
+      "runtime_sec": 14.3902268409729,
+      "timestamp": 1769849709.1552572
+    },
+    "yasamin_32x32_left_right_short_seed197": {
+      "final_crossings": 16,
+      "runtime_sec": 15.502802848815918,
+      "timestamp": 1769849711.2537732
+    },
+    "yasamin_32x32_left_right_short_seed205": {
+      "final_crossings": 18,
+      "runtime_sec": 23.269428730010986,
+      "timestamp": 1769850418.5703194
+    },
+    "yasamin_32x32_left_right_short_seed202": {
+      "final_crossings": 14,
+      "runtime_sec": 23.562443017959595,
+      "timestamp": 1769850418.8230734
+    },
+    "yasamin_32x32_left_right_short_seed207": {
+      "final_crossings": 18,
+      "runtime_sec": 23.62545394897461,
+      "timestamp": 1769850418.9999733
+    },
+    "yasamin_32x32_left_right_short_seed198": {
+      "final_crossings": 18,
+      "runtime_sec": 23.93752646446228,
+      "timestamp": 1769850419.1726696
+    },
+    "yasamin_32x32_left_right_short_seed203": {
+      "final_crossings": 16,
+      "runtime_sec": 24.046638250350952,
+      "timestamp": 1769850419.296773
+    },
+    "yasamin_32x32_left_right_short_seed200": {
+      "final_crossings": 16,
+      "runtime_sec": 24.137989044189453,
+      "timestamp": 1769850419.3931684
+    },
+    "yasamin_32x32_left_right_short_seed201": {
+      "final_crossings": 14,
+      "runtime_sec": 24.15570306777954,
+      "timestamp": 1769850419.4057808
+    },
+    "yasamin_32x32_left_right_short_seed199": {
+      "final_crossings": 18,
+      "runtime_sec": 24.23908042907715,
+      "timestamp": 1769850419.4960945
+    },
+    "yasamin_32x32_left_right_short_seed204": {
+      "final_crossings": 18,
+      "runtime_sec": 24.604777097702026,
+      "timestamp": 1769850419.8870394
+    },
+    "yasamin_32x32_left_right_short_seed206": {
+      "final_crossings": 16,
+      "runtime_sec": 24.946316957473755,
+      "timestamp": 1769850420.264696
     }
   },
   "failed_tasks": {},
   "stats": {
-    "total_completed": 128,
+    "total_completed": 208,
     "total_failed": 0,
     "start_time": 1769846530.2548792,
-    "last_update": 1769847043.8482957
+    "last_update": 1769850420.266383
   }
 }

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
 Entry point script for running the SA dataset generation pipeline.
+Auto-creates virtual environment and installs dependencies if needed.
 
 Usage:
     python run_pipeline.py <machine_id> [--workers N] [--retry-failed] [--config-dir DIR]
@@ -14,11 +15,128 @@ Examples:
 import argparse
 import os
 import sys
+import subprocess
+import platform
 
-# Add current directory to path for imports
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from pipeline.runner import run_pipeline
+def get_venv_path(script_dir):
+    """Get virtual environment path."""
+    return os.path.join(script_dir, ".venv")
+
+
+def get_python_executable(venv_path):
+    """Get Python executable path in venv."""
+    if platform.system() == "Windows":
+        return os.path.join(venv_path, "Scripts", "python.exe")
+    else:
+        return os.path.join(venv_path, "bin", "python")
+
+
+def get_pip_executable(venv_path):
+    """Get pip executable path in venv."""
+    if platform.system() == "Windows":
+        return os.path.join(venv_path, "Scripts", "pip.exe")
+    else:
+        return os.path.join(venv_path, "bin", "pip")
+
+
+def venv_exists(venv_path):
+    """Check if virtual environment exists."""
+    python_exe = get_python_executable(venv_path)
+    return os.path.exists(python_exe)
+
+
+def create_venv(venv_path):
+    """Create virtual environment."""
+    print(f"Creating virtual environment at {venv_path}...")
+    try:
+        subprocess.check_call([sys.executable, "-m", "venv", venv_path])
+        print("✓ Virtual environment created successfully")
+        return True
+    except subprocess.CalledProcessError as e:
+        print(f"✗ Failed to create virtual environment: {e}")
+        return False
+
+
+def install_dependencies(venv_path, script_dir):
+    """Install dependencies from requirements.txt."""
+    pip_exe = get_pip_executable(venv_path)
+    requirements_file = os.path.join(script_dir, "requirements.txt")
+    
+    if not os.path.exists(requirements_file):
+        print(f"✗ requirements.txt not found at {requirements_file}")
+        return False
+    
+    print("Installing dependencies from requirements.txt...")
+    try:
+        # Upgrade pip first
+        subprocess.check_call([pip_exe, "install", "--upgrade", "pip"])
+        # Install requirements
+        subprocess.check_call([pip_exe, "install", "-r", requirements_file])
+        print("✓ Dependencies installed successfully")
+        return True
+    except subprocess.CalledProcessError as e:
+        print(f"✗ Failed to install dependencies: {e}")
+        return False
+
+
+def check_and_setup_venv(script_dir):
+    """Check venv exists, create if needed, install dependencies."""
+    venv_path = get_venv_path(script_dir)
+    
+    # Check if we're already in the venv
+    if hasattr(sys, 'real_prefix') or (hasattr(sys, 'base_prefix') and sys.base_prefix != sys.prefix):
+        # Already in a virtual environment, check if it's the right one
+        if sys.prefix == venv_path:
+            return True
+    
+    # Check if venv exists
+    if not venv_exists(venv_path):
+        print("Virtual environment not found. Setting up...")
+        if not create_venv(venv_path):
+            return False
+        if not install_dependencies(venv_path, script_dir):
+            return False
+    else:
+        # Venv exists, check if we need to install/update dependencies
+        python_exe = get_python_executable(venv_path)
+        try:
+            # Try to import rich to check if dependencies are installed
+            result = subprocess.run(
+                [python_exe, "-c", "import rich, yaml, tqdm"],
+                capture_output=True,
+                text=True
+            )
+            if result.returncode != 0:
+                print("Dependencies missing or outdated. Installing...")
+                if not install_dependencies(venv_path, script_dir):
+                    return False
+        except Exception:
+            print("Checking dependencies failed. Reinstalling...")
+            if not install_dependencies(venv_path, script_dir):
+                return False
+    
+    return True
+
+
+def run_in_venv(venv_path, script_dir, args):
+    """Re-run the script in the virtual environment."""
+    python_exe = get_python_executable(venv_path)
+    
+    # Build command line arguments
+    cmd = [python_exe, __file__] + sys.argv[1:]
+    
+    print(f"Running in virtual environment...")
+    try:
+        # Execute the script in the venv
+        result = subprocess.run(cmd, cwd=script_dir)
+        sys.exit(result.returncode)
+    except KeyboardInterrupt:
+        print("\nInterrupted by user")
+        sys.exit(130)
+    except Exception as e:
+        print(f"Error running in virtual environment: {e}")
+        sys.exit(1)
 
 
 def main():
@@ -72,10 +190,72 @@ Examples:
         help="Show status and exit without running",
     )
 
+    parser.add_argument(
+        "--skip-venv-check",
+        action="store_true",
+        help="Skip virtual environment check (use current Python)",
+    )
+
     args = parser.parse_args()
 
-    # Resolve config directory relative to script location
+    # Resolve script directory
     script_dir = os.path.dirname(os.path.abspath(__file__))
+    venv_path = get_venv_path(script_dir)
+    
+    # Check if we need to setup/run in venv
+    if not args.skip_venv_check:
+        # Check if we're already in the correct venv
+        current_python = sys.executable
+        expected_python = get_python_executable(venv_path)
+        
+        if current_python != expected_python and venv_exists(venv_path):
+            # We're not in the venv, run in it
+            run_in_venv(venv_path, script_dir, args)
+            return
+        elif not venv_exists(venv_path):
+            # Venv doesn't exist, create it
+            if not check_and_setup_venv(script_dir):
+                print("✗ Failed to setup virtual environment")
+                sys.exit(1)
+            # Now run in the newly created venv
+            run_in_venv(venv_path, script_dir, args)
+            return
+        elif current_python == expected_python:
+            # We're in the venv, check if dependencies are installed using subprocess
+            python_exe = get_python_executable(venv_path)
+            deps_installed = False
+            try:
+                result = subprocess.run(
+                    [python_exe, "-c", "import rich, yaml, tqdm, numpy, matplotlib"],
+                    capture_output=True,
+                    text=True,
+                    check=False
+                )
+                deps_installed = (result.returncode == 0)
+            except Exception:
+                deps_installed = False
+            
+            if not deps_installed:
+                print("Dependencies not installed in virtual environment. Installing...")
+                if not install_dependencies(venv_path, script_dir):
+                    print("✗ Failed to install dependencies")
+                    sys.exit(1)
+                print("✓ Dependencies installed successfully")
+                # Continue execution - imports will work now
+    
+    # We're in the correct venv or skipping venv check, run the actual pipeline
+    # Add current directory to path for imports
+    sys.path.insert(0, script_dir)
+    
+    # Import after confirming we're in venv with dependencies
+    try:
+        from pipeline.runner import run_pipeline, ParallelRunner
+    except ImportError as e:
+        print(f"✗ Failed to import required modules: {e}")
+        print("Please ensure dependencies are installed: pip install -r requirements.txt")
+        sys.exit(1)
+
+    # Resolve config directory relative to script location
     config_dir = os.path.join(script_dir, args.config_dir)
 
     if not os.path.isdir(config_dir):
@@ -92,8 +272,6 @@ Examples:
 
     if args.status:
         # Show status only
-        from pipeline.runner import ParallelRunner
-
         runner = ParallelRunner(
             config_dir=config_dir,
             machine_id=args.machine_id,
