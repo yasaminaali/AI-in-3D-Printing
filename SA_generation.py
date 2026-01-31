@@ -1,19 +1,63 @@
-# SA_generation.py
-# ============================================================
-# Simulated Annealing (SA) for ALL zone patterns + Dataset generation.
-#
-# Per SA run (one JSONL record):
-#   grid_W, grid_H, zone_pattern, initial_crossings, final_crossings,
-#   sequence_len, applied_count, seed, run_id,
-#   sequence_ops = ordered list of applied ops (kind, x, y, variant)
-#
-# Supports zone_mode:
-#   "left_right" | "islands" | "stripes" | "voronoi"
-#
-# Requires:
-#   - operations.py  (HamiltonianSTL with get_subgrid, transpose_subgrid, flip_subgrid)
-# If using stripes/voronoi:
-#   - Zones.py with: zones_stripes, zones_voronoi
+"""
+SA_generation.py - Simulated Annealing for Zone Crossing Minimization
+
+This module implements a Simulated Annealing (SA) algorithm to optimize
+Hamiltonian toolpaths by minimizing zone crossings. It generates training
+data for deep learning models that predict optimal Flip/Transpose sequences.
+
+The optimization process:
+    1. Start with an initial Hamiltonian path (zigzag pattern)
+    2. Build a pool of feasible moves (transpose/flip operations)
+    3. Apply random moves and accept/reject based on Metropolis criterion
+    4. Record successful operation sequences for training data
+
+Output Format (JSONL - one record per SA run):
+    {
+        "run_id": "sa_left_right_W32H32_seed0_1234567890",
+        "seed": 0,
+        "grid_W": 32,
+        "grid_H": 32,
+        "zone_pattern": "left_right",
+        "zone_grid": [0, 0, ..., 1, 1],  # Flattened, normalized to 0..K-1
+        "initial_crossings": 32,
+        "final_crossings": 4,
+        "sequence_len": 156,
+        "sequence_ops": [{"kind": "T", "x": 5, "y": 3, "variant": "sr"}, ...],
+        "runtime_sec": 12.5
+    }
+
+SA Configurations:
+    - short:      1,000 iterations, Tmax=60,  Tmin=0.5 (high-crossing trajectories)
+    - medium:     3,000 iterations, Tmax=80,  Tmin=0.5 (balanced optimization)
+    - long:       8,000 iterations, Tmax=100, Tmin=0.3 (near-optimal solutions)
+    - extra_long: 15,000 iterations, Tmax=120, Tmin=0.2 (for large grids)
+
+Supported Zone Modes:
+    - "left_right": Simple vertical split at x = W/2
+    - "islands": Background with square island regions (k=3, 8x8)
+    - "stripes": Parallel vertical/horizontal bands (k=3)
+    - "voronoi": Irregular Voronoi-based regions (k=3)
+
+Dependencies:
+    - operations.py: HamiltonianSTL class
+    - Zones.py: zones_stripes, zones_voronoi functions
+
+Usage:
+    from SA_generation import run_sa, run_sa_multiple_seeds
+
+    # Single run
+    best_crossings, ops = run_sa(width=32, height=32, iterations=3000)
+
+    # Multiple seeds for dataset generation
+    results = run_sa_multiple_seeds(
+        seeds=list(range(100)),
+        width=32, height=32,
+        iterations=3000,
+        zone_mode="left_right"
+    )
+
+Author: AI-in-3D-Printing Team
+"""
 # ============================================================
 
 import os

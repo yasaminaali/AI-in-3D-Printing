@@ -1,7 +1,42 @@
+"""
+operations.py - Hamiltonian Path Operations for Grid Graphs
+
+This module provides the HamiltonianSTL class for creating and manipulating
+Hamiltonian paths/cycles on rectangular grid graphs. It supports:
+
+- Multiple initial path patterns (zigzag, snake_bends, hilbert, fermat_spiral)
+- Transpose operations on 3x3 subgrids (8 variants: sr, wa, sl, ea, nl, eb, nr, wb)
+- Flip operations on 3x2 or 2x3 subgrids (4 variants: w, e, n, s)
+- Path validation and ASCII visualization
+
+Key Concepts:
+    - Grid represented by two edge matrices: H (horizontal) and V (vertical)
+    - H[y][x] = True means edge exists between (x,y) and (x+1,y)
+    - V[y][x] = True means edge exists between (x,y) and (x,y+1)
+    - Transpose/Flip operations reroute paths while preserving Hamiltonian property
+
+Usage:
+    from operations import HamiltonianSTL
+
+    # Create a 32x32 grid with zigzag initialization
+    h = HamiltonianSTL(32, 32)
+
+    # Get a 3x3 subgrid and attempt transpose
+    sub = h.get_subgrid((0, 0), (2, 2))
+    result, msg = h.transpose_subgrid(sub, 'sr')
+
+    # Get a 3x2 subgrid and attempt flip
+    sub = h.get_subgrid((0, 0), (2, 1))
+    result, msg = h.flip_subgrid(sub, 'w')
+
+Author: AI-in-3D-Printing Team
+"""
+
 from typing import Tuple, List, Optional, Set
 import random
 
 Point = Tuple[int, int]
+
 
 class HamiltonianSTL:
     def __init__(self, width: int, height: int):

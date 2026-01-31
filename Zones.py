@@ -1,8 +1,39 @@
+"""
+Zones.py - Zone Pattern Generators for Multi-Material 3D Printing
+
+This module provides functions to generate different zone patterns that represent
+material regions in a 3D printing layer. Each pattern divides a WxH grid into
+distinct zones, where each zone corresponds to a different material.
+
+Zone crossings (transitions between zones along the toolpath) are what we aim
+to minimize through optimization, as each crossing requires a material change
+which slows down the printing process.
+
+Available Patterns:
+    - zones_left_right: Vertical bands (left to right)
+    - zones_top_bottom: Horizontal bands (top to bottom)
+    - zones_diagonal: Diagonal split with random offset
+    - zones_stripes: Parallel stripes (vertical or horizontal)
+    - zones_checkerboard: Alternating checkerboard pattern
+    - zones_voronoi: Irregular regions based on random seed points
+
+Usage:
+    from Zones import zones_stripes, zones_voronoi
+
+    # Create 3 vertical stripes on a 32x32 grid
+    zones = zones_stripes(32, 32, direction="v", k=3)
+
+    # Create Voronoi-based zones with 3 regions
+    zones, meta = zones_voronoi(32, 32, k=3)
+    print(meta['seeds'])  # Random seed point locations
+
+Author: AI-in-3D-Printing Team
+"""
+
 import random
 from typing import Dict, Tuple, List
 
-# Mapping Zones
-
+# Type alias for grid coordinates
 Coord = Tuple[int, int]
 
 # left - right
