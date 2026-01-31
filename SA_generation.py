@@ -851,38 +851,33 @@ def run_sa(
         applied_move: Optional[Dict[str, Any]] = None
         applied_snap = None
 
-        # choose a move from pool with flip preference in phase 2
+        # 1) sample from pool
         if move_pool:
-            p_flip, _ = op_probabilities(i, split)
-            mv = choose_move_from_pool(move_pool, p_flip=p_flip)
-            if mv:
-                snap = _snapshot_edges_for_move(h, mv)
-                if apply_move(h, mv):
-                    applied_move = mv
-                    applied_snap = snap
+            mv = random.choice(move_pool)
+            snap = _snapshot_edges_for_move(h, mv)
+
+            if apply_move(h, mv):
+                applied_move = mv
+                applied_snap = snap
+            else:
+                apply_fail += 1
+                _restore_edges_snapshot(h, snap)
+
+        # 2) fallback random tries
+        else:
+            for _ in range(max_move_tries):
+                x3 = random.randint(0, width - 3)
+                y3 = random.randint(0, height - 3)
+
+                if random.random() < 0.5:
+                    variant = random.choice(_transpose_variants(h))
+                    mv_try = {"op": "transpose", "variant": variant, "x": x3, "y": y3, "w": 3, "h": 3}
                 else:
-                    apply_fail += 1
-                    _restore_edges_snapshot(h, snap)
-
-        # if pool empty / failed, do a small random fallback search 
-        if applied_move is None:
-            local_tries = min(40, int(max_move_tries))  
-
-            for _ in range(local_tries):
-                p_flip, _ = op_probabilities(i, split)
-                choose_flip = (random.random() < p_flip)
-
-                if choose_flip:
-                    fv = _flip_variants(h)
-                    variant, w, hh = random.choice(fv)
+                    variants = {'n': (3, 2), 's': (3, 2), 'e': (2, 3), 'w': (2, 3)}
+                    variant, (w, hh) = random.choice(list(variants.items()))
                     x = random.randint(0, width - w)
                     y = random.randint(0, height - hh)
                     mv_try = {"op": "flip", "variant": variant, "x": x, "y": y, "w": w, "h": hh}
-                else:
-                    x3 = random.randint(0, width - 3)
-                    y3 = random.randint(0, height - 3)
-                    variant = random.choice(_transpose_variants(h))
-                    mv_try = {"op": "transpose", "variant": variant, "x": x3, "y": y3, "w": 3, "h": 3}
 
                 snap = _snapshot_edges_for_move(h, mv_try)
 
@@ -895,10 +890,12 @@ def run_sa(
                 applied_snap = snap
                 break
 
+            if applied_move is None:
+                invalid_moves += 1
+
+        # acceptance step
         if applied_move is None:
-            invalid_moves += 1
             no_improve += 1
-            # continue SA loop
         else:
             new_cost = compute_crossings(h, zones)
             delta = new_cost - current_cost

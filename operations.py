@@ -266,6 +266,24 @@ class HamiltonianSTL:
                     if self.has_edge(cur, (nx, ny)):
                         stack.append((nx, ny))
         return len(visited) == self.width * self.height
+    
+    def _snapshot_adjacent_edges_in_subgrid(self, sub) -> List[Tuple[Point, Point, bool]]:
+        pts = self._subgrid_flat_points(sub)
+        ptset = set(pts)
+
+        snap: List[Tuple[Point, Point, bool]] = []
+        for (x, y) in pts:
+            r = (x + 1, y)
+            if r in ptset:
+                snap.append(((x, y), r, bool(self.has_edge((x, y), r))))
+            d = (x, y + 1)
+            if d in ptset:
+                snap.append(((x, y), d, bool(self.has_edge((x, y), d))))
+        return snap
+
+    def _restore_adjacent_edges_snapshot(self, snap: List[Tuple[Point, Point, bool]]) -> None:
+        for p, q, val in snap:
+            self.set_edge(p, q, val)
 
     def transpose_subgrid(self, sub: List[List[Point]], variant: str = 'sr'):
         if variant not in self.transpose_patterns:
@@ -277,16 +295,18 @@ class HamiltonianSTL:
         if present != set(tuple(sorted(e)) for e in OLD):
             return sub, f'pattern_mismatch_{variant}'
 
-        H_snap = [row[:] for row in self.H]
-        V_snap = [row[:] for row in self.V]
+        # snapshot only the local edges (FAST)
+        snap = self._snapshot_adjacent_edges_in_subgrid(sub)
+
         self._apply_edge_diff_in_subgrid(sub, OLD, NEW)
 
         if not self.validate_full_path():
-            self.H, self.V = H_snap, V_snap
+            # restore only local edges (FAST)
+            self._restore_adjacent_edges_snapshot(snap)
             return sub, f'not transposable_{variant}'
 
         return sub, f'transposed_{variant}'
-
+    
     def flip_subgrid(self, sub: List[List[Point]], variant: str):
         if variant not in self.flip_patterns:
             return sub, f'unknown variant {variant}'
@@ -297,12 +317,14 @@ class HamiltonianSTL:
         if present != set(tuple(sorted(e)) for e in OLD):
             return sub, f'pattern_mismatch_{variant}'
 
-        H_snap = [row[:] for row in self.H]
-        V_snap = [row[:] for row in self.V]
+        # snapshot only the local edges (FAST)
+        snap = self._snapshot_adjacent_edges_in_subgrid(sub)
+
         self._apply_edge_diff_in_subgrid(sub, OLD, NEW)
 
         if not self.validate_full_path():
-            self.H, self.V = H_snap, V_snap
+            # restore only local edges (FAST)
+            self._restore_adjacent_edges_snapshot(snap)
             return sub, f'not flippable_{variant}'
 
         return sub, f'flipped_{variant}'
