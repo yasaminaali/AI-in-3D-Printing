@@ -182,6 +182,7 @@ def zones_to_grid(zones: Dict[Point, int], W: int, H: int) -> List[List[int]]:
     """
     return [[int(zones[(x, y)]) for x in range(W)] for y in range(H)]
 
+
 # ============================================================
 # Crossings
 # ============================================================
@@ -279,17 +280,47 @@ def apply_move(h: HamiltonianSTL, mv: Dict[str, Any]) -> bool:
 
     return True
 
+def _snapshot_edges_for_move(h: HamiltonianSTL, mv: Dict[str, Any]):
+    op = mv["op"]
+    x, y = mv["x"], mv["y"]
+    w, hh = mv["w"], mv["h"]
+
+    if op == "transpose":
+        sub = h.get_subgrid((x, y), (x + 2, y + 2))
+    elif op == "flip":
+        sub = h.get_subgrid((x, y), (x + w - 1, y + hh - 1))
+    else:
+        return []
+
+    # snapshot edges inside this subgrid only
+    pts = [p for row in sub for p in row if p is not None]
+    ptset = set(pts)
+
+    snap = []
+    for (px, py) in pts:
+        r = (px + 1, py)
+        if r in ptset:
+            snap.append(((px, py), r, bool(h.has_edge((px, py), r))))
+        d = (px, py + 1)
+        if d in ptset:
+            snap.append(((px, py), d, bool(h.has_edge((px, py), d))))
+    return snap
+
+
+def _restore_edges_snapshot(h: HamiltonianSTL, snap):
+    for p, q, val in snap:
+        h.set_edge(p, q, val)
+
 
 def try_move_feasible(h: HamiltonianSTL, mv: Dict[str, Any]) -> bool:
-    H0, V0 = deep_copy(h.H, h.V)
+    snap = _snapshot_edges_for_move(h, mv)
     try:
         ok = apply_move(h, mv)
-        h.H, h.V = H0, V0
+        _restore_edges_snapshot(h, snap)
         return bool(ok)
     except Exception:
-        h.H, h.V = H0, V0
+        _restore_edges_snapshot(h, snap)
         return False
-
 
 def _transpose_variants(h: HamiltonianSTL) -> List[str]:
     tp = getattr(h, "transpose_patterns", [])
@@ -448,7 +479,7 @@ def normalize_zone_grid(zone_grid):
     if not zone_grid:
         return zone_grid
 
-    # Detect 2D grid 
+    # Detect 2D grid
     is_2d = isinstance(zone_grid[0], list)
 
     if is_2d:
@@ -493,16 +524,15 @@ def save_sa_dataset_record(
     final_crossings: int,
     best_ops: List[Dict[str, Any]],
     runtime_sec: float,
-    zones: Dict[Point, int],    
+    zones: Dict[Point, int],
 ):
     os.makedirs(dataset_dir, exist_ok=True)
     path = os.path.join(dataset_dir, "Dataset.jsonl")
 
     # --- zones → grid ---
-    zone_grid = [[zones[(x, y)] for x in range(grid_W)] for y in range(grid_H)]
-    zone_grid = normalize_zone_grid(zone_grid)   
-    zone_grid_flat = flatten_grid(zone_grid)     
-
+    zone_grid = zones_to_grid(zones, grid_W, grid_H)
+    zone_grid = normalize_zone_grid(zone_grid)
+    zone_grid_flat = flatten_grid(zone_grid)
 
     sequence_ops = []
     for mv in best_ops:
@@ -510,8 +540,6 @@ def save_sa_dataset_record(
         sequence_ops.append(
             {"kind": kind, "x": int(mv["x"]), "y": int(mv["y"]), "variant": str(mv["variant"])}
         )
-    
-    zone_grid = zones_to_grid(zones, grid_W, grid_H)
 
     rec = {
         "run_id": str(run_id),
@@ -677,7 +705,7 @@ def run_sa(
     plot_live: bool = False,
     show_every_accepted: int = 0,
     pause_seconds: float = 0.01,
-    dataset_dir: str = "Dataset",
+    dataset_dir: str = "Dataset2",
     write_dataset: bool = True,
     # pool / attempts
     max_move_tries: int = 25,
@@ -820,18 +848,21 @@ def run_sa(
 
         T = dynamic_temperature(i, iterations, Tmin=Tmin, Tmax=Tmax)
 
-        prev_H, prev_V = deep_copy(h.H, h.V)
         applied_move: Optional[Dict[str, Any]] = None
+        applied_snap = None
 
         # choose a move from pool with flip preference in phase 2
         if move_pool:
             p_flip, _ = op_probabilities(i, split)
             mv = choose_move_from_pool(move_pool, p_flip=p_flip)
-            if mv and apply_move(h, mv):
-                applied_move = mv
-            else:
-                apply_fail += 1
-                h.H, h.V = prev_H, prev_V
+            if mv:
+                snap = _snapshot_edges_for_move(h, mv)
+                if apply_move(h, mv):
+                    applied_move = mv
+                    applied_snap = snap
+                else:
+                    apply_fail += 1
+                    _restore_edges_snapshot(h, snap)
 
         # if pool empty / failed, do a small random fallback search 
         if applied_move is None:
@@ -853,17 +884,20 @@ def run_sa(
                     variant = random.choice(_transpose_variants(h))
                     mv_try = {"op": "transpose", "variant": variant, "x": x3, "y": y3, "w": 3, "h": 3}
 
-                if apply_move(h, mv_try):
-                    applied_move = mv_try
-                    break
+                snap = _snapshot_edges_for_move(h, mv_try)
 
-                apply_fail += 1
-                h.H, h.V = prev_H, prev_V
+                if not apply_move(h, mv_try):
+                    apply_fail += 1
+                    _restore_edges_snapshot(h, snap)
+                    continue
+
+                applied_move = mv_try
+                applied_snap = snap
+                break
 
         if applied_move is None:
             invalid_moves += 1
             no_improve += 1
-            h.H, h.V = prev_H, prev_V
             # continue SA loop
         else:
             new_cost = compute_crossings(h, zones)
@@ -910,7 +944,9 @@ def run_sa(
 
             else:
                 rejected += 1
-                h.H, h.V = prev_H, prev_V
+                # restore only local edges for this move
+                if applied_snap is not None:
+                    _restore_edges_snapshot(h, applied_snap)
                 no_improve += 1
 
         # reheating
@@ -940,6 +976,7 @@ def run_sa(
                 f"Invalid={invalid_moves}, ApplyFail={apply_fail}, "
                 f"Pool={len(move_pool)} (F={flips},T={trans}), NoImprove={no_improve}"
             )
+
 
     # restore best
     h.H, h.V = best_state
@@ -991,7 +1028,7 @@ def run_sa_multiple_seeds(
     Tmax: float = 80.0,
     Tmin: float = 0.5,
     zone_mode: str = "left_right",
-    dataset_dir: str = "Dataset",
+    dataset_dir: str = "Dataset2",
     write_dataset: bool = True,
     plot_live: bool = False,
     max_move_tries=25,
