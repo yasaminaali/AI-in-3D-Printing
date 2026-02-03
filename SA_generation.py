@@ -775,7 +775,7 @@ def run_sa(
     voronoi_k: int = 3,
     # DEBUG
     debug: bool = False,
-) -> Tuple[int, List[Dict[str, Any]]]:
+) -> Tuple[int, int, List[Dict[str, Any]]]:
 
     random.seed(seed)
     start_time = time.perf_counter()
@@ -1057,7 +1057,7 @@ def run_sa(
         plt.ioff()
         plt.show()
 
-    return int(best_cost), best_ops
+    return int(initial_crossings), int(best_cost), best_ops
 
 
 def run_sa_multiple_seeds(
@@ -1092,7 +1092,7 @@ def run_sa_multiple_seeds(
     results: List[Dict[str, Any]] = []
     for s in seeds:
         seed_start = time.perf_counter()
-        best_c, best_ops = run_sa(
+        init_c, best_c, best_ops = run_sa(
             width=width,
             height=height,
             iterations=iterations,

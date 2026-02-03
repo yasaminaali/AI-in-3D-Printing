@@ -19,232 +19,63 @@ AI-in-3D-Printing/
 ├── operations.py             # HamiltonianSTL class - grid operations
 ├── Zones.py                  # Zone pattern generators
 ├── SA_generation.py          # Simulated Annealing + dataset generation
-├── Dataset/                  # Generated dataset output (JSONL files)
-└── DATA_GENERATION_SPEC.md   # Detailed specification for dataset generation
+├── run_pipeline.py           # Entry point for parallel data generation
+├── pipeline/                 # Pipeline modules
+│   ├── runner.py             # Multiprocessing orchestrator with Rich UI
+│   ├── worker.py             # Task execution worker
+│   ├── task_generator.py     # Task generation from configs
+│   ├── config.py             # Configuration data classes
+│   ├── checkpoint.py         # Progress tracking & resume
+│   └── merge.py              # Dataset merging utility
+├── config/                   # Configuration files
+│   └── global_config.yaml    # SA algorithm presets
+└── output/                   # Generated datasets
 ```
-
-## File Descriptions
-
-### operations.py
-Core module providing the `HamiltonianSTL` class for manipulating Hamiltonian paths on grid graphs.
-
-**Features:**
-- **Initial path patterns:** zigzag, snake_bends, hilbert, fermat_spiral
-- **Transpose operations:** 8 variants (sr, wa, sl, ea, nl, eb, nr, wb) on 3×3 subgrids
-- **Flip operations:** 4 variants (w, e, n, s) on 3×2 or 2×3 subgrids
-- **Path validation:** Ensures Hamiltonian property is preserved
-- **ASCII visualization:** Debug output of grid state
-
-### Zones.py
-Zone pattern generators for simulating multi-material print regions.
-
-**Available Patterns:**
-| Pattern | Description | Parameters |
-|---------|-------------|------------|
-| `zones_left_right` | Vertical bands | k (number of bands) |
-| `zones_top_bottom` | Horizontal bands | k (number of bands) |
-| `zones_diagonal` | Diagonal split | Random offset |
-| `zones_stripes` | Parallel stripes | direction (v/h), k |
-| `zones_checkerboard` | Alternating grid | kx, ky |
-| `zones_voronoi` | Irregular regions | k (seed points) |
-
-### SA_generation.py
-Simulated Annealing optimizer and dataset generator.
-
-**Key Functions:**
-- `run_sa()` - Single SA optimization run
-- `run_sa_multiple_seeds()` - Batch runs with different seeds
-- `compute_crossings()` - Count zone boundary crossings
-- `save_sa_dataset_record()` - Write results to JSONL
-
-**SA Configurations:**
-| Config | Iterations | Tmax | Tmin | Use Case |
-|--------|------------|------|------|----------|
-| short | 1,000 | 60 | 0.5 | High-crossing trajectories |
-| medium | 3,000 | 80 | 0.5 | Balanced optimization |
-| long | 8,000 | 100 | 0.3 | Near-optimal solutions |
-| extra_long | 15,000 | 120 | 0.2 | Large grids (64×64+) |
 
 ## Installation
 
-### Prerequisites
-- Python 3.8+
-- Required packages: `matplotlib`, `numpy`
-
-```bash
-pip install matplotlib numpy
-```
-
-## Usage
-
-### Basic Example
-
-```python
-from SA_generation import run_sa, run_sa_multiple_seeds
-
-# Single optimization run
-best_crossings, operations = run_sa(
-    width=32,
-    height=32,
-    iterations=3000,
-    zone_mode="left_right",
-    write_dataset=True
-)
-print(f"Reduced crossings to {best_crossings} with {len(operations)} operations")
-```
-
-### Generate Training Dataset
-
-```python
-from SA_generation import run_sa_multiple_seeds
-
-# Generate data for 100 different seeds
-results = run_sa_multiple_seeds(
-    seeds=list(range(100)),
-    width=32,
-    height=32,
-    iterations=3000,
-    Tmax=80.0,
-    Tmin=0.5,
-    zone_mode="left_right",
-    dataset_dir="Dataset",
-    write_dataset=True
-)
-```
-
-### Using Different Zone Patterns
-
-```python
-# Stripes pattern (3 vertical bands)
-run_sa(zone_mode="stripes", stripe_k=3, stripe_direction="v")
-
-# Islands pattern (3 square islands on background)
-run_sa(zone_mode="islands", num_islands=3, island_size=8)
-
-# Voronoi pattern (3 irregular regions)
-run_sa(zone_mode="voronoi", voronoi_k=3)
-```
-
----
-
-## Pipeline Setup and Data Generation
-
-The project includes a **multiprocessing pipeline** for large-scale dataset generation across multiple machines. This system automatically distributes work, tracks progress via checkpoints, and merges results.
-
-### Project Structure
-
-```
-AI-in-3D-Printing/
-├── run_pipeline.py              # Entry point script
-├── pipeline/                    # Pipeline modules
-│   ├── runner.py               # Multiprocessing orchestrator
-│   ├── worker.py               # Task execution worker
-│   ├── task_generator.py       # Task generation from configs
-│   ├── config.py               # Configuration data classes
-│   ├── checkpoint.py           # Progress tracking & resume
-│   └── merge.py                # Dataset merging utility
-├── config/                      # Configuration files
-│   ├── global_config.yaml      # SA algorithm presets
-│   ├── yasamin.yaml            # Yasamin's work assignment
-│   ├── istiaq.yaml             # Istiaq's work assignment
-│   └── kazi.yaml               # Kazi's work assignment
-└── output/                      # Generated datasets
-    ├── yasamin/
-    │   ├── Dataset.jsonl       # Training data
-    │   └── checkpoint_yasamin.json
-    ├── istiaq/
-    └── kazi/
-```
-
-### Configuration System
-
-#### 1. Global Configuration (`config/global_config.yaml`)
-
-Defines SA algorithm presets used across all machines:
-
-```yaml
-sa_configs:
-  short:        # 3,000 iterations - quick runs
-    iterations: 3000
-    Tmax: 60.0
-    Tmin: 0.5
-    transpose_phase_ratio: 0.6
-    
-  medium:       # 5,000 iterations - balanced
-    iterations: 5000
-    Tmax: 80.0
-    Tmin: 0.5
-    
-  long:         # 10,000 iterations - thorough
-    iterations: 10000
-    Tmax: 100.0
-    Tmin: 0.3
-    
-  extra_long:   # 20,000 iterations - large grids
-    iterations: 20000
-    Tmax: 120.0
-    Tmin: 0.2
-```
-
-#### 2. Machine Configuration (`config/{machine_id}.yaml`)
-
-Each machine has a config file defining its work assignment:
-
-```yaml
-machine_id: yasamin
-num_workers: 8                    # Parallel processes
-output_dir: output/yasamin        # Output directory
-
-assignments:
-  - grid: [32, 32]                # Grid size
-    patterns:                     # Zone patterns to run
-      - left_right
-      - stripes
-      - islands
-      - voronoi
-    sa_configs:                   # Which SA presets
-      - short
-      - medium
-      - long
-    seeds:                        # Number of seeds per pattern
-      left_right: 2300
-      stripes: 600
-      islands: 450
-      voronoi: 700
-```
-
-### Quick Start
-
-#### Step 1: Setup Environment
-
 ```bash
 # Install dependencies
-pip install matplotlib numpy pyyaml tqdm
-
-# Or install all dependencies from requirements.txt
-pip install -r requirements.txt
+pip install matplotlib numpy pyyaml rich
 
 # Verify installation
-python -c "import matplotlib, numpy, yaml, tqdm; print('OK')"
+python -c "import matplotlib, numpy, yaml, rich; print('OK')"
 ```
 
-#### Step 2: Run the Pipeline
+## Quick Start
+
+### Basic SA Optimization
+
+```python
+from SA_generation import run_sa
+
+# Single optimization run
+initial, final, operations = run_sa(
+    width=32,
+    height=32,
+    iterations=3000,
+    zone_mode="left_right",
+    write_dataset=True
+)
+print(f"Reduced crossings from {initial} to {final} with {len(operations)} operations")
+```
+
+### Using the Pipeline
+
+The pipeline provides parallel data generation with a Rich UI, automatic checkpointing, and resume capability.
 
 ```bash
-# Basic usage - run with default workers
-python run_pipeline.py yasamin
+# Run the pipeline
+python run_pipeline.py <machine_id> --workers 8
 
-# Specify number of workers
-python run_pipeline.py yasamin --workers 8
+# Check status without running
+python run_pipeline.py <machine_id> --status
 
-# Check progress without running
-python run_pipeline.py yasamin --status
+# Resume from where you left off (automatic)
+python run_pipeline.py <machine_id> --workers 8
 
 # Retry failed tasks
-python run_pipeline.py yasamin --retry-failed
-
-# Custom progress logging interval (seconds)
-python run_pipeline.py yasamin --progress-interval 30
+python run_pipeline.py <machine_id> --retry-failed
 ```
 
 **Command-line Options:**
@@ -257,253 +88,50 @@ python run_pipeline.py yasamin --progress-interval 30
 | `--retry-failed` | Retry previously failed tasks | False |
 | `--status` | Show status and exit without running | False |
 
-### Multiprocessing Architecture
+### Resume Functionality
 
-The pipeline uses Python's `multiprocessing.Pool` for parallel execution:
+The pipeline automatically tracks progress via checkpoint files. When you stop the pipeline (Ctrl+C) and restart it:
+1. The pipeline loads the checkpoint file
+2. Skips all previously completed tasks
+3. Resumes from where it left off
+4. The progress bar shows both resumed and new progress
 
-```
-┌─────────────────────────────────────────┐
-│           Main Process                  │
-│  ┌─────────────────────────────────┐    │
-│  │  ParallelRunner                 │    │
-│  │  - Load configs                 │    │
-│  │  - Generate all tasks           │    │
-│  │  - Filter pending tasks         │    │
-│  │  - Submit to Pool               │    │
-│  └─────────────────────────────────┘    │
-│                   │                     │
-│         ┌─────────┴─────────┐           │
-│         ▼                 ▼             │
-│  ┌─────────────┐   ┌─────────────┐      │
-│  │  Worker 1   │   │  Worker 2   │      │
-│  │  ...        │   │  ...        │      │
-│  └─────────────┘   └─────────────┘      │
-│                                         │
-└─────────────────────────────────────────┘
-```
+Checkpoint files are stored at: `output/<machine_id>/checkpoint_<machine_id>.json`
 
-**Key Features:**
+To start fresh, delete the checkpoint file.
 
-1. **Automatic Task Distribution**: Tasks are distributed across workers as they become available
-2. **Checkpoint-Based Resume**: Progress saved to JSON file; restart resumes where left off
-3. **Graceful Shutdown**: SIGINT/SIGTERM handlers ensure clean exit
-4. **Progress Tracking**: Real-time stats with ETA calculation
+## Zone Patterns
 
-### Monitoring Progress
-
-The pipeline features a **live progress bar** with real-time statistics using `tqdm`. During execution, you'll see:
-
-```
-════════════════════════════════════════════════════════════
-  SA Dataset Generation Pipeline
-════════════════════════════════════════════════════════════
-
-  Machine:     yasamin
-  Workers:     8
-  Total:       12,150 tasks
-  Completed:   0 tasks
-  Pending:     12,150 tasks
-
-Task Breakdown:
-  By grid:    {'32x32': 12150}
-  By pattern: {'left_right': 6900, 'stripes': 1800, 'islands': 1350, 'voronoi': 2100}
-  By config:  {'short': 4050, 'medium': 4050, 'long': 4050}
-
-**yasamin**: 100%|████████████████████| 12,150/12,150 [4:32:15<0:00:00, 0.74 tasks/s]
-
-═══ Pipeline Statistics ═══
-  Machine:        yasamin
-  Workers:        8
-  Total Tasks:    12,150
-
-  Completed:      8,250 (68.0%)
-  Failed:         0
-  Remaining:      3,900
-
-  Elapsed:        4h 32m
-  ETA:            2h 15m
-  Rate:           0.74 tasks/sec
-  Avg Task Time:  45.2s
-
-  Avg Improvement: 65.3%
-
-  Active Tasks (8):
-    • yasamin_32x32_left_right_short_... (12.5s)
-    ... and 7 more
-═══════════════════════════
-```
-
-**Features:**
-- **Live progress bar** with percentage and visual indicator
-- **Real-time statistics** updated every second
-- **ETA calculation** based on current processing rate
-- **Active task tracking** showing currently running tasks
-- **Performance metrics** including average task time and improvement rate
-- **Color-coded output** for better readability (when terminal supports it)
-- **File logging** - all logs go to `output/{machine_id}/logs/{machine_id}_{timestamp}.log`
-
-### Logging
-
-All output is logged to files. The console only shows the Rich UI progress display.
-
-**Log file location:**
-```
-output/{machine_id}/logs/{machine_id}_{timestamp}.log
-```
-
-**Example:**
-```
-output/yasamin/logs/yasamin_20240131_143022.log
-```
-
-**Log contents:**
-- Task start/completion messages
-- Crossings and runtime information
-- Errors and warnings
-- Final summary statistics
-- Checkpoint operations
-
-**Sample log output:**
-```
-2024-01-31 14:30:15 - INFO - Starting pipeline for yasamin with 8 workers
-2024-01-31 14:30:15 - INFO - Total tasks: 12150
-2024-01-31 14:30:22 - INFO - Task completed: yasamin_32x32_left_right_short_seed0 | crossings=4 | time=12.50s
-2024-01-31 14:35:30 - INFO - Run Complete!
-2024-01-31 14:35:30 - INFO - Elapsed: 5m 15s
-2024-01-31 14:35:30 - INFO - Completed: 100 (this run)
-```
-
-### Checkpoint and Resume
-
-The pipeline automatically creates a checkpoint file at `output/{machine_id}/checkpoint_{machine_id}.json`:
-
-```json
-{
-  "completed_tasks": {
-    "yasamin_32x32_left_right_short_seed0": {
-      "final_crossings": 4,
-      "runtime_sec": 12.5,
-      "timestamp": 1706745600.0
-    }
-  },
-  "failed_tasks": {},
-  "stats": {
-    "total_completed": 1000,
-    "total_failed": 0,
-    "start_time": 1706745600.0
-  }
-}
-```
-
-**Resume behavior:**
-- On restart, completed tasks are skipped automatically
-- Failed tasks can be retried with `--retry-failed`
-- To restart from scratch, delete the checkpoint file
-
-### Merging Datasets
-
-After all machines complete their work, merge the datasets:
+| Pattern | Description | Parameters |
+|---------|-------------|------------|
+| `left_right` | Vertical bands | k (number of bands) |
+| `stripes` | Parallel stripes | direction (v/h), k |
+| `islands` | Square islands on background | num_islands, island_size |
+| `voronoi` | Irregular regions | k (seed points) |
 
 ```python
-from pipeline.merge import merge_datasets
+# Stripes pattern (3 vertical bands)
+run_sa(zone_mode="stripes", stripe_k=3, stripe_direction="v")
 
-# Merge all machine outputs
-report = merge_datasets(
-    input_dirs=["output/yasamin", "output/istiaq", "output/kazi"],
-    output_path="Dataset/Complete_Dataset.jsonl",
-    deduplicate=True,      # Remove duplicate run_ids
-    validate=True          # Validate merged dataset
-)
+# Islands pattern (3 square islands)
+run_sa(zone_mode="islands", num_islands=3, island_size=8)
 
-print(f"Total records: {report['final_record_count']}")
-print(f"Duplicates removed: {report['duplicates_removed']}")
+# Voronoi pattern (3 irregular regions)
+run_sa(zone_mode="voronoi", voronoi_k=3)
 ```
 
-Or use the standalone script:
+## SA Configuration Presets
 
-```bash
-python merge_datasets.py \
-    --inputs output/yasamin output/istiaq output/kazi \
-    --output Dataset/Complete_Dataset.jsonl \
-    --deduplicate \
-    --validate
-```
-
-### Work Distribution
-
-The dataset generation is split across 3 machines:
-
-| Machine | Grid Sizes | Total Tasks | Est. Time (8 workers) |
-|---------|------------|-------------|----------------------|
-| **Yasamin** | 32×32, 64×64, 32×128, 32×256 | 36,050 | ~4-5 days |
-| **Istiaq** | 30×30, 80×80 | 19,750 | ~2-3 days |
-| **Kazi** | 50×50, 100×100 | 14,350 | ~2-3 days |
-| **TOTAL** | 8 grids | **70,150** | **~500K trajectories** |
-
-*Time estimates assume medium SA config (~30-60 sec per task on modern CPU)*
-
-### Performance Tuning
-
-#### Choosing Worker Count
-
-```bash
-# Rule of thumb: workers = CPU cores - 1 (leave one for OS)
-# For a 16-core machine:
-python run_pipeline.py yasamin --workers 15
-
-# For shared machines, use fewer workers:
-python run_pipeline.py yasamin --workers 4
-```
-
-**Guidelines:**
-- **CPU-bound tasks**: Use all cores (or cores-1)
-- **Memory-constrained**: Reduce workers if RAM usage is high
-- **Shared machines**: Use 25-50% of available cores
-
-#### SA Configuration Selection
-
-| Grid Size | Recommended SA Configs | Why |
-|-----------|----------------------|-----|
-| ≤32×32 | short, medium, long | Fast convergence |
-| 50×50 to 64×64 | medium, long, extra_long | Need more iterations |
-| ≥80×80 or rectangular | medium, long, extra_long | Large search space |
-
-### Troubleshooting
-
-#### Issue: Workers crashing with memory errors
-
-**Solution**: Reduce worker count or use smaller grids first:
-```bash
-python run_pipeline.py yasamin --workers 4
-```
-
-#### Issue: Tasks failing consistently
-
-**Solution**: Check the checkpoint file for error details, then retry:
-```bash
-python run_pipeline.py yasamin --retry-failed
-```
-
-#### Issue: Want to restart from scratch
-
-**Solution**: Delete the checkpoint file:
-```bash
-rm output/yasamin/checkpoint_yasamin.json
-python run_pipeline.py yasamin
-```
-
-#### Issue: Progress seems stuck
-
-**Solution**: Check status to see if tasks are still running:
-```bash
-python run_pipeline.py yasamin --status
-```
-
----
+| Config | Iterations | Tmax | Tmin | Use Case |
+|--------|------------|------|------|----------|
+| short | 3,000 | 60 | 0.5 | Quick runs, small grids |
+| medium | 5,000 | 80 | 0.5 | Balanced optimization |
+| long | 10,000 | 100 | 0.3 | Thorough optimization |
+| extra_long | 20,000 | 120 | 0.2 | Large grids (64x64+) |
 
 ## Dataset Format
 
-Output is written to `Dataset/Dataset.jsonl` as JSON Lines format:
+Output is written to `output/<machine_id>/Dataset.jsonl` as JSON Lines:
 
 ```json
 {
@@ -518,26 +146,44 @@ Output is written to `Dataset/Dataset.jsonl` as JSON Lines format:
   "sequence_len": 156,
   "sequence_ops": [
     {"kind": "T", "x": 5, "y": 3, "variant": "sr"},
-    {"kind": "F", "x": 10, "y": 7, "variant": "w"},
-    ...
+    {"kind": "F", "x": 10, "y": 7, "variant": "w"}
   ],
   "runtime_sec": 12.5
 }
 ```
 
-**Field Descriptions:**
-| Field | Description |
-|-------|-------------|
-| `run_id` | Unique identifier for the run |
-| `seed` | Random seed used |
-| `grid_W`, `grid_H` | Grid dimensions |
-| `zone_pattern` | Type of zone pattern |
-| `zone_grid` | Flattened zone assignments (row-major, normalized to 0..K-1) |
-| `initial_crossings` | Crossings before optimization |
-| `final_crossings` | Crossings after optimization |
-| `sequence_len` | Number of operations applied |
-| `sequence_ops` | List of operations: T=Transpose, F=Flip |
-| `runtime_sec` | Execution time in seconds |
+## Merging Datasets
+
+After running on multiple machines, merge the datasets:
+
+```python
+from pipeline.merge import merge_datasets
+
+report = merge_datasets(
+    input_dirs=["output/machine1", "output/machine2"],
+    output_path="Dataset/Complete_Dataset.jsonl",
+    deduplicate=True,
+    validate=True
+)
+```
+
+## Troubleshooting
+
+**Workers crashing with memory errors:**
+```bash
+python run_pipeline.py <machine_id> --workers 4  # Reduce workers
+```
+
+**Tasks failing consistently:**
+```bash
+python run_pipeline.py <machine_id> --retry-failed
+```
+
+**Want to restart from scratch:**
+```bash
+rm output/<machine_id>/checkpoint_<machine_id>.json
+python run_pipeline.py <machine_id>
+```
 
 ## Algorithm Details
 
@@ -552,19 +198,7 @@ Output is written to `Dataset/Dataset.jsonl` as JSON Lines format:
 4. **Output:** Best operation sequence and final crossing count
 
 ### Temperature Schedule
-Uses sigmoid-based cooling:
-```
-T(i) = Tmin + (Tmax - Tmin) * sigmoid(k * (iters/2 - i))
-```
-
-### Reheating Strategy
-When stuck (no improvement for `reheat_patience` iterations):
-- Multiply Tmax by `reheat_factor` (up to `reheat_cap`)
-- Rebuild move pool
-
-## Contributing
-
-This project is part of ongoing research in AI-assisted 3D printing optimization.
+Uses sigmoid-based cooling with reheating when stuck.
 
 ## License
 

@@ -97,27 +97,30 @@ class RichUIManager:
     All logs go to file, only Rich UI is displayed on console.
     """
     
-    def __init__(self, total_tasks: int, num_workers: int, machine_id: str, output_dir: str):
-        self.total_tasks = total_tasks
+    def __init__(self, total_tasks: int, num_workers: int, machine_id: str, output_dir: str,
+                 already_completed: int = 0):
+        self.total_tasks = total_tasks  # Total including already completed
+        self.already_completed = already_completed  # Tasks completed in previous runs
         self.num_workers = num_workers
         self.machine_id = machine_id
         self.output_dir = output_dir
         self.start_time = time.time()
-        
+
         # Setup file logging
         self.logger = setup_logging(output_dir, machine_id)
         self.log_file = os.path.join(output_dir, "logs", f"{machine_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
         self.logger.info(f"Starting pipeline for {machine_id} with {num_workers} workers")
-        self.logger.info(f"Total tasks: {total_tasks}")
-        
+        self.logger.info(f"Total tasks: {total_tasks}, Already completed: {already_completed}")
+
         # Create manager for shared state
         self.manager = Manager()
         self.shared_state = self.manager.dict()
-        self.shared_state['completed'] = 0
+        self.shared_state['completed'] = already_completed  # Start from already completed
         self.shared_state['failed'] = 0
         self.shared_state['current_tasks'] = self.manager.dict()
         self.shared_state['logs'] = self.manager.list()
-        self.shared_state['crossings'] = self.manager.list()
+        self.shared_state['initial_crossings'] = self.manager.list()
+        self.shared_state['final_crossings'] = self.manager.list()
         self.shared_state['runtimes'] = self.manager.list()
         
         # Local cache for stats
@@ -140,10 +143,11 @@ class RichUIManager:
             expand=True
         )
         
-        # Add main progress task
+        # Add main progress task - start with already completed tasks
         self.main_task = self.progress.add_task(
             f"[bold cyan]{machine_id}",
             total=total_tasks,
+            completed=already_completed,
             rate=0.0
         )
         
@@ -216,39 +220,44 @@ class RichUIManager:
         completed = self.shared_state['completed']
         failed = self.shared_state['failed']
         remaining = self.total_tasks - completed - failed
+        # Calculate tasks completed THIS session (excluding resumed)
+        completed_this_session = completed - self.already_completed
         elapsed = time.time() - self.start_time
-        
+
         # Calculate statistics
-        if completed > 0:
+        if completed_this_session > 0:
             avg_time = sum(self.task_durations) / len(self.task_durations) if self.task_durations else 0
-            rate = completed / elapsed if elapsed > 0 else 0
+            rate = completed_this_session / elapsed if elapsed > 0 else 0
             eta_seconds = remaining / rate if rate > 0 else float('inf')
-            
-            # Calculate crossings improvement if available
-            crossings_list = list(self.shared_state['crossings'])
-            if crossings_list:
-                avg_crossings = sum(crossings_list) / len(crossings_list)
-                min_crossings = min(crossings_list)
-                max_crossings = max(crossings_list)
+
+            # Calculate crossings stats if available
+            initial_list = list(self.shared_state['initial_crossings'])
+            final_list = list(self.shared_state['final_crossings'])
+            if initial_list and final_list:
+                avg_initial = sum(initial_list) / len(initial_list)
+                avg_final = sum(final_list) / len(final_list)
+                best_final = min(final_list)  # Best (least) crossings achieved
             else:
-                avg_crossings = min_crossings = max_crossings = 0
+                avg_initial = avg_final = best_final = 0
         else:
             avg_time = rate = eta_seconds = 0
-            avg_crossings = min_crossings = max_crossings = 0
-        
+            avg_initial = avg_final = best_final = 0
+
         # Create stats table
         stats_table = Table(box=None, show_header=False, padding=(0, 1))
         stats_table.add_column("Label", style="cyan", width=15)
         stats_table.add_column("Value", style="white")
-        
+
         # Progress section
         stats_table.add_row("[bold yellow]Progress", "")
         stats_table.add_row("  Total:", f"[white]{format_number(self.total_tasks)}")
+        if self.already_completed > 0:
+            stats_table.add_row("  Resumed:", f"[dim]{format_number(self.already_completed)}")
         stats_table.add_row("  Completed:", f"[green]{format_number(completed)} ({completed/self.total_tasks*100:.1f}%)")
         stats_table.add_row("  Failed:", f"[red]{format_number(failed)}")
         stats_table.add_row("  Remaining:", f"[yellow]{format_number(remaining)}")
         stats_table.add_row("", "")
-        
+
         # Time section
         stats_table.add_row("[bold yellow]Timing", "")
         stats_table.add_row("  Elapsed:", f"[white]{format_time(elapsed)}")
@@ -256,13 +265,13 @@ class RichUIManager:
         stats_table.add_row("  Rate:", f"[green]{rate:.2f} tasks/sec")
         stats_table.add_row("  Avg Time:", f"[white]{avg_time:.1f}s per task")
         stats_table.add_row("", "")
-        
-        # Crossings section
-        if completed > 0:
+
+        # Crossings section (only show if we have data from this session)
+        if completed_this_session > 0 and avg_initial > 0:
             stats_table.add_row("[bold yellow]Crossings", "")
-            stats_table.add_row("  Average:", f"[white]{avg_crossings:.1f}")
-            stats_table.add_row("  Min:", f"[green]{min_crossings}")
-            stats_table.add_row("  Max:", f"[red]{max_crossings}")
+            stats_table.add_row("  Initial:", f"[white]{avg_initial:.1f} (avg)")
+            stats_table.add_row("  Final:", f"[cyan]{avg_final:.1f} (avg)")
+            stats_table.add_row("  Best:", f"[green]{best_final}")
             stats_table.add_row("", "")
         
         # Active tasks section
@@ -312,45 +321,50 @@ class RichUIManager:
         self.stats_thread.start()
         self.logger.info("Rich UI started")
     
-    def log_task_completion(self, task_id: str, success: bool, final_crossings: Optional[int], 
+    def log_task_completion(self, task_id: str, success: bool,
+                           initial_crossings: Optional[int], final_crossings: Optional[int],
                            runtime_sec: float, error: Optional[str] = None):
         """Log task completion to both Rich UI and file."""
         timestamp = time.strftime("%H:%M:%S")
-        
+
         if success:
-            status = "[green]✓[/]"
+            status = "[green]OK[/]"
             short_id = task_id[:35] + "..." if len(task_id) > 35 else task_id
-            details = f"crossings={final_crossings}, time={runtime_sec:.1f}s"
-            log_entry = f"{timestamp}|✓|{short_id}|{details}"
-            
+            details = f"{initial_crossings}->{final_crossings}, {runtime_sec:.1f}s"
+            log_entry = f"{timestamp}|OK|{short_id}|{details}"
+
             # Add to Rich UI logs
             logs = list(self.shared_state['logs'])
             logs.append(log_entry)
             if len(logs) > 100:
                 logs = logs[-100:]
             self.shared_state['logs'] = logs
-            
+
             # Log to file
-            self.logger.info(f"Task completed: {task_id} | crossings={final_crossings} | time={runtime_sec:.2f}s")
-            
+            self.logger.info(f"Task completed: {task_id} | {initial_crossings}->{final_crossings} | time={runtime_sec:.2f}s")
+
             # Update crossings stats
+            if initial_crossings is not None:
+                initial_list = list(self.shared_state['initial_crossings'])
+                initial_list.append(initial_crossings)
+                self.shared_state['initial_crossings'] = initial_list
             if final_crossings is not None:
-                crossings = list(self.shared_state['crossings'])
-                crossings.append(final_crossings)
-                self.shared_state['crossings'] = crossings
+                final_list = list(self.shared_state['final_crossings'])
+                final_list.append(final_crossings)
+                self.shared_state['final_crossings'] = final_list
         else:
-            status = "[red]✗[/]"
+            status = "[red]X[/]"
             short_id = task_id[:35] + "..." if len(task_id) > 35 else task_id
             error_msg = error[:30] + "..." if error and len(error) > 30 else (error or "Unknown error")
-            log_entry = f"{timestamp}|✗|{short_id}|[red]{error_msg}[/]"
-            
+            log_entry = f"{timestamp}|X|{short_id}|[red]{error_msg}[/]"
+
             # Add to Rich UI logs
             logs = list(self.shared_state['logs'])
             logs.append(log_entry)
             if len(logs) > 100:
                 logs = logs[-100:]
             self.shared_state['logs'] = logs
-            
+
             # Log to file
             self.logger.error(f"Task failed: {task_id} | error={error}")
     
@@ -383,6 +397,7 @@ class RichUIManager:
         self.log_task_completion(
             result.task_id,
             result.success,
+            result.initial_crossings,
             result.final_crossings,
             result.runtime_sec or 0.0,
             result.error
@@ -479,6 +494,7 @@ class ParallelRunner:
         result = TaskResult(
             task_id=result_dict["task_id"],
             success=result_dict["success"],
+            initial_crossings=result_dict.get("initial_crossings"),
             final_crossings=result_dict.get("final_crossings"),
             runtime_sec=result_dict.get("runtime_sec"),
             error=result_dict.get("error"),
@@ -534,12 +550,14 @@ class ParallelRunner:
         # Create output directory
         os.makedirs(self.machine_cfg.output_dir, exist_ok=True)
 
-        # Initialize Rich UI Manager
+        # Initialize Rich UI Manager with total tasks and already completed count
+        already_completed = len(completed_ids)
         self._ui_manager = RichUIManager(
-            total_tasks=total_pending,
+            total_tasks=total_all,
             num_workers=self.num_workers,
             machine_id=self.machine_id,
-            output_dir=self.machine_cfg.output_dir
+            output_dir=self.machine_cfg.output_dir,
+            already_completed=already_completed
         )
 
         # Run with multiprocessing pool

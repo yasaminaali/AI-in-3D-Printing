@@ -17,6 +17,7 @@ class TaskResult:
     """Result of a single task execution."""
     task_id: str
     success: bool
+    initial_crossings: Optional[int] = None
     final_crossings: Optional[int] = None
     runtime_sec: Optional[float] = None
     error: Optional[str] = None
@@ -103,6 +104,7 @@ class Checkpoint:
         """
         with self._lock:
             self._data["completed_tasks"][result.task_id] = {
+                "initial_crossings": result.initial_crossings,
                 "final_crossings": result.final_crossings,
                 "runtime_sec": result.runtime_sec,
                 "timestamp": result.timestamp,

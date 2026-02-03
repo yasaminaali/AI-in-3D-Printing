@@ -11,7 +11,7 @@ sa_configs:
     max_move_tries: 200
     pool_refresh_period: 250
     pool_max_moves: 5000
-    reheat_patience: 1500
+    reheat_patience: 500
     reheat_factor: 1.5
     reheat_cap: 600.0
     transpose_phase_ratio: 0.6
@@ -37,7 +37,7 @@ sa_configs:
     max_move_tries: 200
     pool_refresh_period: 250
     pool_max_moves: 5000
-    reheat_patience: 2000
+    reheat_patience: 2500
     reheat_factor: 1.5
     reheat_cap: 600.0
     transpose_phase_ratio: 0.6
@@ -50,7 +50,7 @@ sa_configs:
     max_move_tries: 200
     pool_refresh_period: 250
     pool_max_moves: 5000
-    reheat_patience: 3000
+    reheat_patience: 4000
     reheat_factor: 1.5
     reheat_cap: 600.0
     transpose_phase_ratio: 0.6

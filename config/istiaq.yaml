@@ -1,39 +1,95 @@
 # Istiaq's Machine Configuration
-# Handles 64x64 islands/voronoi and 128x128 grids
+# Zone Crossing Dataset - ~21,425 runs total
 
 machine_id: istiaq
 num_workers: 8
 output_dir: output/istiaq
 
 assignments:
-  # 64x64 grid - islands and voronoi (complement yasamin's work)
-  - grid: [64, 64]
+  # Grid 30x30 (SA: short, medium, long)
+  - grid: [30, 30]
     patterns:
+      - left_right
+      - stripes
       - islands
       - voronoi
     sa_configs:
+      - short
+      - medium
+      - long
+    seeds:
+      left_right: 1150
+      stripes: 300
+      islands: 225
+      voronoi: 350
+
+  # Grid 80x80 (SA: short, medium, long, extra_long)
+  - grid: [80, 80]
+    patterns:
+      - left_right
+      - stripes
+      - islands
+      - voronoi
+    sa_configs:
+      - short
       - medium
       - long
       - extra_long
     seeds:
-      islands: 350
-      voronoi: 500
-    zone_params:
-      num_islands: 4
-      island_size: 12
-      voronoi_k: 4
+      left_right: 475
+      stripes: 150
+      islands: 125
+      voronoi: 200
 
-  # 128x128 grid - all patterns
-  - grid: [128, 128]
+  # Grid 32x32 (SA: short, medium, long)
+  - grid: [32, 32]
     patterns:
       - left_right
       - stripes
+      - islands
+      - voronoi
     sa_configs:
+      - short
+      - medium
+      - long
+    seeds:
+      left_right: 1150
+      stripes: 300
+      islands: 225
+      voronoi: 175
+
+  # Grid 64x64 (SA: short, medium, long, extra_long)
+  - grid: [64, 64]
+    patterns:
+      - left_right
+    sa_configs:
+      - short
+      - medium
       - long
       - extra_long
     seeds:
-      left_right: 800
-      stripes: 300
-    zone_params:
-      stripe_k: 5
-      stripe_direction: "v"
+      left_right: 575
+
+  # Grid 32x128 (SA: short, medium, long, extra_long)
+  - grid: [32, 128]
+    patterns:
+      - left_right
+    sa_configs:
+      - short
+      - medium
+      - long
+      - extra_long
+    seeds:
+      left_right: 575
+
+  # Grid 32x256 (SA: short, medium, long, extra_long)
+  - grid: [32, 256]
+    patterns:
+      - left_right
+    sa_configs:
+      - short
+      - medium
+      - long
+      - extra_long
+    seeds:
+      left_right: 350

@@ -39,7 +39,7 @@ def execute_task(task: Task) -> TaskResult:
         from SA_generation import run_sa
 
         # Call run_sa with all parameters from task
-        final_crossings, best_ops = run_sa(
+        initial_crossings, final_crossings, best_ops = run_sa(
             width=task.width,
             height=task.height,
             iterations=task.sa_config.iterations,
@@ -82,6 +82,7 @@ def execute_task(task: Task) -> TaskResult:
         return TaskResult(
             task_id=task.task_id,
             success=True,
+            initial_crossings=initial_crossings,
             final_crossings=final_crossings,
             runtime_sec=runtime,
             error=None,
@@ -136,6 +137,7 @@ def execute_task_dict(task_dict: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "task_id": result.task_id,
         "success": result.success,
+        "initial_crossings": result.initial_crossings,
         "final_crossings": result.final_crossings,
         "runtime_sec": result.runtime_sec,
         "error": result.error,
