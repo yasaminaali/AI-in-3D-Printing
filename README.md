@@ -120,6 +120,20 @@ checkpointing:
 
 **Recommended:** `sequence_length: 100` for 2× speedup with minimal quality loss.
 
+### Model Output Location
+
+After training completes, your models are saved in:
+
+```
+nn_checkpoints/
+├── best_model.pt              ← Your best model (use this!)
+├── checkpoint_epoch_1.pt      ← Periodic checkpoints
+├── checkpoint_epoch_10.pt
+└── checkpoint_epoch_20.pt
+```
+
+**Use `nn_checkpoints/best_model.pt`** for inference - it has the lowest validation loss.
+
 ### Inference
 
 Use the trained model to optimize new Hamiltonian paths:
@@ -151,6 +165,8 @@ That's it! The script will:
 - Train the CNN+RNN model with Rich UI dashboard
 - Save checkpoints to `nn_checkpoints/`
 - Log metrics to `nn_logs/`
+
+**After training, your model is at:** `nn_checkpoints/best_model.pt`
 
 ### Installation (Manual)
 

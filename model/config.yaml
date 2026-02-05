@@ -30,25 +30,24 @@ model:
     flip_variants: ["n", "s", "e", "w"]  # north, south, east, west
     transpose_variants: ["nl", "nr", "sl", "sr", "eb"]  # corner-based variants
 
-# Training Configuration (Optimized for RTX 4080 12GB)
+# Training Configuration (Optimized for RTX 5090 32GB)
 training:
-  epochs: 100
+  epochs: 300              # Train longer for convergence
   learning_rate: 0.001
   optimizer: "Adam"
   weight_decay: 0.0001
   scheduler: "ReduceLROnPlateau"
-  scheduler_patience: 10
-  early_stopping_patience: 20
+  scheduler_patience: 15    # More patience before reducing LR
+  early_stopping_patience: 50 # Don't stop too early - model needs time!
   gradient_clip: 1.0
   
-  # Batch sizes per grid size (configurable per hardware)
-  # Format: "WxH": batch_size
-  # Adjust based on your GPU memory
+  # Batch sizes optimized for RTX 5090 (32GB VRAM)
+  # 4× larger than RTX 4080 for massive speedup + better gradients
   batch_sizes:
-    "30x30": 64   # For 30x30 grids
-    "50x50": 32   # For 50x50 grids
-    "80x80": 16   # For 80x80 grids
-    "default": 8  # Fallback for other sizes
+    "30x30": 256   # 4× larger - ~45 batches → ~12 batches per epoch
+    "50x50": 128   # 4× larger
+    "80x80": 64    # 4× larger
+    "default": 32  # Fallback for other sizes
   
   # Loss weights
   loss_weights:
@@ -133,11 +132,12 @@ performance:
   # Use this to simulate larger batches without increasing memory
   gradient_accumulation_steps: 1
   
-  # Mixed precision training (faster on modern GPUs)
-  # Set to true to enable automatic mixed precision (AMP)
-  mixed_precision: false
+  # Mixed precision training - ENABLED for RTX 5090
+  # Gives 2× speedup on modern GPUs with no quality loss
+  mixed_precision: true
   
-  # Compile model (PyTorch 2.0+ feature, speeds up training)
+  # Compile model (PyTorch 2.0+ feature)
+  # Can give 10-20% speedup but takes time to compile
   compile_model: false
   
 # Inference Configuration

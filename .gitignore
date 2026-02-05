@@ -27,6 +27,9 @@ experiment_*/
 *.json
 !config/*.yaml
 
+# Large dataset files
+combined_dataset.jsonl
+
 # OS files
 .DS_Store
 Thumbs.db
