@@ -773,6 +773,9 @@ def run_sa(
     stripe_k: int = 3,
     # voronoi
     voronoi_k: int = 3,
+    # Initial path pattern: 'auto', 'zigzag', 'vertical_zigzag', 'fermat_spiral'
+    # 'auto' selects optimal pattern based on zone_mode
+    init_pattern: str = "auto",
     # DEBUG
     debug: bool = False,
 ) -> Tuple[int, int, List[Dict[str, Any]]]:
@@ -783,13 +786,7 @@ def run_sa(
     if plot_live:
         plt.ion()
 
-    h = HamiltonianSTL(width, height)
-    if not is_valid_cycle(h):
-        raise RuntimeError("Initial Hamiltonian cycle invalid. Check HamiltonianSTL initialization.")
-
-    if debug:
-        debug_print_pattern_keys(h)
-
+    # Build zones first to determine optimal initial path
     zones, zones_meta = build_zones(
         width,
         height,
@@ -802,6 +799,26 @@ def run_sa(
         stripe_k=stripe_k,
         voronoi_k=voronoi_k,
     )
+
+    # Select optimal initial path based on zone pattern
+    # Vertical zones -> vertical zigzag, Horizontal zones -> horizontal zigzag
+    if init_pattern == "auto":
+        if zone_mode in ("left_right", "leftright", "lr"):
+            init_pattern = "vertical_zigzag"
+        elif zone_mode == "stripes" and stripe_direction == "v":
+            init_pattern = "vertical_zigzag"
+        elif zone_mode == "stripes" and stripe_direction == "h":
+            init_pattern = "zigzag"
+        else:
+            # For voronoi, islands, etc. - use default horizontal zigzag
+            init_pattern = "zigzag"
+
+    h = HamiltonianSTL(width, height, init_pattern=init_pattern)
+    if not is_valid_cycle(h):
+        raise RuntimeError("Initial Hamiltonian cycle invalid. Check HamiltonianSTL initialization.")
+
+    if debug:
+        debug_print_pattern_keys(h)
 
     current_cost = compute_crossings(h, zones)
     initial_crossings = current_cost

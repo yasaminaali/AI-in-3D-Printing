@@ -217,11 +217,13 @@ class RichUIManager:
     
     def _generate_stats_panel(self) -> Panel:
         """Generate detailed statistics panel."""
-        completed = self.shared_state['completed']
+        total_completed = self.shared_state['completed']
         failed = self.shared_state['failed']
-        remaining = self.total_tasks - completed - failed
         # Calculate tasks completed THIS session (excluding resumed)
-        completed_this_session = completed - self.already_completed
+        completed_this_session = max(0, total_completed - self.already_completed)
+        # Calculate remaining based on pending tasks for THIS run
+        total_pending_this_run = self.total_tasks - self.already_completed
+        remaining = max(0, total_pending_this_run - completed_this_session - failed)
         elapsed = time.time() - self.start_time
 
         # Calculate statistics
@@ -253,7 +255,13 @@ class RichUIManager:
         stats_table.add_row("  Total:", f"[white]{format_number(self.total_tasks)}")
         if self.already_completed > 0:
             stats_table.add_row("  Resumed:", f"[dim]{format_number(self.already_completed)}")
-        stats_table.add_row("  Completed:", f"[green]{format_number(completed)} ({completed/self.total_tasks*100:.1f}%)")
+        # Show this session's completed with percentage based on pending tasks
+        total_pending_this_run = self.total_tasks - self.already_completed
+        if total_pending_this_run > 0:
+            progress_pct = min(100.0, (completed_this_session / total_pending_this_run) * 100)
+        else:
+            progress_pct = 100.0 if completed_this_session > 0 else 0.0
+        stats_table.add_row("  Completed:", f"[green]{format_number(completed_this_session)} ({progress_pct:.1f}%)")
         stats_table.add_row("  Failed:", f"[red]{format_number(failed)}")
         stats_table.add_row("  Remaining:", f"[yellow]{format_number(remaining)}")
         stats_table.add_row("", "")
@@ -304,11 +312,21 @@ class RichUIManager:
         while not self._shutdown:
             time.sleep(0.25)  # Update 4 times per second
             if not self._shutdown:
-                # Update progress
-                completed = self.shared_state['completed']
+                # Update progress - only count tasks completed THIS session
+                total_completed = self.shared_state['completed']
+                completed_this_session = max(0, total_completed - self.already_completed)
+                # Calculate percentage based on pending tasks, not total_all
+                total_pending = self.total_tasks - self.already_completed
+                if total_pending > 0:
+                    progress_pct = min(100.0, (completed_this_session / total_pending) * 100)
+                else:
+                    progress_pct = 100.0 if completed_this_session > 0 else 0.0
+                
                 elapsed = time.time() - self.start_time
-                rate = completed / elapsed if elapsed > 0 else 0
-                self.progress.update(self.main_task, completed=completed, rate=rate)
+                rate = completed_this_session / elapsed if elapsed > 0 else 0
+                # Update Rich progress with this-session-only completed count
+                # Rich will calculate: completed_this_session / total_pending * 100%
+                self.progress.update(self.main_task, completed=completed_this_session, rate=rate)
                 
                 # Update panels
                 self._update_logs_panel()
@@ -551,7 +569,8 @@ class ParallelRunner:
         os.makedirs(self.machine_cfg.output_dir, exist_ok=True)
 
         # Initialize Rich UI Manager with total tasks and already completed count
-        already_completed = len(completed_ids)
+        # already_completed = tasks from current config that are already done
+        already_completed = total_all - total_pending
         self._ui_manager = RichUIManager(
             total_tasks=total_all,
             num_workers=self.num_workers,

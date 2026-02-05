@@ -49,7 +49,7 @@ sa_configs:
     Tmin: 0.2
     max_move_tries: 200
     pool_refresh_period: 250
-    pool_max_moves: 5000
+    pool_max_moves: 20000  # Increased for 100x100+ grids (needs ~10k+ for transposes + flips)
     reheat_patience: 4000
     reheat_factor: 1.5
     reheat_cap: 600.0

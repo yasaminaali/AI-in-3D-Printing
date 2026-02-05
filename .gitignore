@@ -1,1 +1,46 @@
+# Virtual environments
+.venv/
+.venv*/
+CCAI/
+nn_venv/
+nn_logs/
+nn_checkpoints/
+nn_data/
+# Python cache
+__pycache__/
+__pycache__
+__pycache__*/
+*.pyc
+*.pyo
+
+# Output directories
+output/
+checkpoints*/
+logs/
+
+# Experiment outputs (prevent future bloat)
+*_output/
+test_*/
+experiment_*/
+
+# Results files
+*.json
+!config/*.yaml
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Temp files
+*.log
+*.tmp
+nul
+
+# Local config
+config/ansh.yaml
 AGENTS.md

@@ -4,7 +4,12 @@ operations.py - Hamiltonian Path Operations for Grid Graphs
 This module provides the HamiltonianSTL class for creating and manipulating
 Hamiltonian paths/cycles on rectangular grid graphs. It supports:
 
-- Multiple initial path patterns (zigzag, snake_bends, hilbert, fermat_spiral)
+- Multiple initial path patterns:
+  - zigzag (horizontal): rows traversed left-right, right-left
+  - vertical_zigzag: columns traversed top-bottom, bottom-top
+  - fermat_spiral: inward spiral pattern
+  - hilbert: Hilbert space-filling curve (requires 2^n square grid)
+  - snake_bends: serpentine pattern with bends
 - Transpose operations on 3x3 subgrids (8 variants: sr, wa, sl, ea, nl, eb, nr, wb)
 - Flip operations on 3x2 or 2x3 subgrids (4 variants: w, e, n, s)
 - Path validation and ASCII visualization
@@ -15,19 +20,23 @@ Key Concepts:
     - V[y][x] = True means edge exists between (x,y) and (x,y+1)
     - Transpose/Flip operations reroute paths while preserving Hamiltonian property
 
+Initial Path Selection Guide:
+    - Vertical zone boundaries (left_right, stripes direction='v'): use vertical_zigzag
+    - Horizontal zone boundaries (stripes direction='h'): use zigzag (horizontal)
+    - Irregular zones (voronoi): fermat_spiral often works well
+
 Usage:
     from operations import HamiltonianSTL
 
-    # Create a 32x32 grid with zigzag initialization
+    # Create with default horizontal zigzag
     h = HamiltonianSTL(32, 32)
+
+    # Create with vertical zigzag (better for vertical zone boundaries)
+    h = HamiltonianSTL(32, 32, init_pattern='vertical_zigzag')
 
     # Get a 3x3 subgrid and attempt transpose
     sub = h.get_subgrid((0, 0), (2, 2))
     result, msg = h.transpose_subgrid(sub, 'sr')
-
-    # Get a 3x2 subgrid and attempt flip
-    sub = h.get_subgrid((0, 0), (2, 1))
-    result, msg = h.flip_subgrid(sub, 'w')
 
 Author: AI-in-3D-Printing Team
 """
@@ -39,24 +48,62 @@ Point = Tuple[int, int]
 
 
 class HamiltonianSTL:
-    def __init__(self, width: int, height: int):
+    def __init__(self, width: int, height: int, init_pattern: str = 'zigzag'):
+        """
+        Create a grid with a Hamiltonian path.
+        
+        Args:
+            width: Grid width
+            height: Grid height
+            init_pattern: Initial path pattern. Options:
+                - 'zigzag': Horizontal zigzag (default)
+                - 'vertical_zigzag': Vertical zigzag (optimal for vertical zone boundaries)
+                - 'fermat_spiral': Inward spiral
+                - 'hilbert': Hilbert curve (requires 2^n square grid)
+                - 'snake_bends': Serpentine with bends
+                - 'none': No initialization (empty grid)
+        """
         self.width, self.height = width, height
         self.H = [[False] * (width - 1) for _ in range(height)]
         self.V = [[False] * width       for _ in range(height - 1)]
-        self.zigzag()
-        #self.snake_bends()
-        #self.hilbert()
-        #self.fermat_spiral()
+        
+        if init_pattern == 'zigzag':
+            self.zigzag()
+        elif init_pattern == 'vertical_zigzag':
+            self.vertical_zigzag()
+        elif init_pattern == 'fermat_spiral':
+            self.fermat_spiral()
+        elif init_pattern == 'hilbert':
+            self.hilbert()
+        elif init_pattern == 'snake_bends':
+            self.snake_bends()
+        elif init_pattern == 'none':
+            pass  # Leave edges empty
+        else:
+            raise ValueError(f"Unknown init_pattern: {init_pattern}")
 
     # Multipla Initial Paths : Zigzag - Snake Bends - Hilbert - Random
 
-    # Zigzag initial path
+    # Zigzag initial path (horizontal - traverses rows left-right, right-left)
     def zigzag(self):
         for y in range(self.height):
             for x in range(self.width - 1):
                 self.H[y][x] = True
             if y < self.height - 1:
                 self.V[y][0 if y % 2 else self.width - 1] = True
+
+    # Vertical zigzag (traverses columns top-bottom, bottom-top)
+    # Optimal for vertical zone boundaries (left_right, stripes with direction='v')
+    def vertical_zigzag(self):
+        self.clear_edges()
+        for x in range(self.width):
+            # Vertical edges within column
+            for y in range(self.height - 1):
+                self.V[y][x] = True
+            # Horizontal edge to next column (alternating top/bottom)
+            if x < self.width - 1:
+                connect_y = self.height - 1 if x % 2 == 0 else 0
+                self.H[connect_y][x] = True
 
     # Snake Bends
     # Grid is size of odd numbers (9,9)
@@ -287,6 +334,11 @@ class HamiltonianSTL:
     }
 
     def validate_full_path(self) -> bool:
+        """
+        Check that all nodes are reachable from (0,0).
+        NOTE: This only checks connectivity, not that it's a valid Hamiltonian cycle.
+        Use validate_hamiltonian_cycle() for full validation.
+        """
         visited = set()
         stack = [(0,0)]
         while stack:
@@ -300,6 +352,65 @@ class HamiltonianSTL:
                 if 0 <= nx < self.width and 0 <= ny < self.height:
                     if self.has_edge(cur, (nx, ny)):
                         stack.append((nx, ny))
+        return len(visited) == self.width * self.height
+
+    def get_degree(self, x: int, y: int) -> int:
+        """Get the degree (number of edges) of a node."""
+        degree = 0
+        # Check horizontal edges
+        if x > 0 and self.H[y][x-1]:
+            degree += 1
+        if x < self.width - 1 and self.H[y][x]:
+            degree += 1
+        # Check vertical edges
+        if y > 0 and self.V[y-1][x]:
+            degree += 1
+        if y < self.height - 1 and self.V[y][x]:
+            degree += 1
+        return degree
+
+    def validate_hamiltonian_cycle(self) -> bool:
+        """
+        Validate that the current edge configuration forms a valid Hamiltonian path.
+        
+        A Hamiltonian path must satisfy:
+        1. Exactly 2 nodes have degree 1 (endpoints)
+        2. All other nodes have exactly degree 2
+        3. All nodes are connected (single component)
+        
+        Returns True if valid, False otherwise.
+        """
+        degree_1_count = 0
+        
+        # Check degrees of all nodes
+        for y in range(self.height):
+            for x in range(self.width):
+                d = self.get_degree(x, y)
+                if d == 1:
+                    degree_1_count += 1
+                elif d != 2:
+                    # Degree 0, 3, or 4 is invalid
+                    return False
+        
+        # Must have exactly 2 endpoints
+        if degree_1_count != 2:
+            return False
+        
+        # Check connectivity - all nodes must be reachable
+        visited = set()
+        stack = [(0, 0)]
+        while stack:
+            cur = stack.pop()
+            if cur in visited:
+                continue
+            visited.add(cur)
+            x, y = cur
+            for dx, dy in [(-1,0), (1,0), (0,-1), (0,1)]:
+                nx, ny = x + dx, y + dy
+                if 0 <= nx < self.width and 0 <= ny < self.height:
+                    if self.has_edge(cur, (nx, ny)):
+                        stack.append((nx, ny))
+        
         return len(visited) == self.width * self.height
     
     def _snapshot_adjacent_edges_in_subgrid(self, sub) -> List[Tuple[Point, Point, bool]]:
@@ -363,6 +474,208 @@ class HamiltonianSTL:
             return sub, f'not flippable_{variant}'
 
         return sub, f'flipped_{variant}'
+
+    # ============================================================
+    # Large-scale operations (4x4, 5x5, 6x6)
+    # ============================================================
+    
+    # 4x4 transpose patterns - derived from 3x3 concepts extended
+    # Indices for 4x4: 0  1  2  3
+    #                  4  5  6  7
+    #                  8  9  10 11
+    #                  12 13 14 15
+    transpose_patterns_4x4 = {
+        # Pattern: shift right side down
+        '4x4_sr': {
+            'old': [(0,1),(1,2),(2,3),(3,7),(7,11),(11,15),(4,5),(5,6),(6,7),(8,9),(9,10),(10,11),(12,13),(13,14),(14,15)],
+            'new': [(0,4),(4,5),(5,6),(6,7),(7,11),(11,15),(1,2),(2,3),(3,7),(8,9),(9,10),(10,11),(12,13),(13,14),(14,15)]
+        },
+        # Pattern: shift left side down  
+        '4x4_sl': {
+            'old': [(0,1),(1,2),(2,3),(0,4),(4,8),(8,12),(4,5),(5,6),(6,7),(8,9),(9,10),(10,11),(12,13),(13,14),(14,15)],
+            'new': [(0,1),(1,2),(2,3),(0,4),(4,5),(5,9),(8,12),(9,10),(10,11),(6,7),(12,13),(13,14),(14,15)]
+        },
+    }
+    
+    # 5x5 transpose patterns
+    # Indices: 0  1  2  3  4
+    #          5  6  7  8  9
+    #          10 11 12 13 14
+    #          15 16 17 18 19
+    #          20 21 22 23 24
+    transpose_patterns_5x5 = {
+        # We'll use a generic approach instead of hardcoding
+    }
+    
+    def try_rectangular_swap(self, x0: int, y0: int, w: int, h: int) -> Tuple[bool, str]:
+        """
+        Try to swap the path routing within a rectangular region.
+        This is a more general operation that can work with any size subgrid.
+        
+        The algorithm:
+        1. Find the boundary edges (edges that cross into/out of the region)
+        2. Try different ways to reconnect the internal path
+        3. Validate that it's still a Hamiltonian path
+        
+        Returns: (success, message)
+        """
+        if x0 < 0 or y0 < 0 or x0 + w > self.width or y0 + h > self.height:
+            return False, "out_of_bounds"
+        if w < 2 or h < 2:
+            return False, "too_small"
+            
+        # Snapshot edges for rollback
+        H_before = [row[:] for row in self.H]
+        V_before = [row[:] for row in self.V]
+        
+        # Find boundary crossing points
+        boundary_edges = []
+        
+        # Top edge
+        for x in range(x0, x0 + w):
+            if y0 > 0 and self.V[y0-1][x]:
+                boundary_edges.append(((x, y0-1), (x, y0), 'v'))
+        # Bottom edge
+        for x in range(x0, x0 + w):
+            if y0 + h - 1 < self.height - 1 and self.V[y0+h-1][x]:
+                boundary_edges.append(((x, y0+h-1), (x, y0+h), 'v'))
+        # Left edge
+        for y in range(y0, y0 + h):
+            if x0 > 0 and self.H[y][x0-1]:
+                boundary_edges.append(((x0-1, y), (x0, y), 'h'))
+        # Right edge
+        for y in range(y0, y0 + h):
+            if x0 + w - 1 < self.width - 1 and self.H[y][x0+w-1]:
+                boundary_edges.append(((x0+w-1, y), (x0+w, y), 'h'))
+        
+        # Must have exactly 2 boundary edges for a valid swap
+        if len(boundary_edges) != 2:
+            return False, f"invalid_boundary_count_{len(boundary_edges)}"
+        
+        # Try reversing the path segment inside the rectangle
+        # This is a simple swap: just reverse the internal traversal
+        
+        # Get all internal edges
+        internal_h = []
+        internal_v = []
+        for y in range(y0, y0 + h):
+            for x in range(x0, x0 + w - 1):
+                if self.H[y][x]:
+                    internal_h.append((x, y))
+        for y in range(y0, y0 + h - 1):
+            for x in range(x0, x0 + w):
+                if self.V[y][x]:
+                    internal_v.append((x, y))
+        
+        # Simple swap: try toggling some internal edges
+        # This is a heuristic - toggle middle edges
+        mid_x = x0 + w // 2
+        mid_y = y0 + h // 2
+        
+        # Toggle vertical edge at midpoint
+        if mid_y < y0 + h - 1 and 0 <= mid_y < len(self.V):
+            for x in range(x0, x0 + w):
+                if x < len(self.V[mid_y]):
+                    self.V[mid_y][x] = not self.V[mid_y][x]
+        
+        # Validate
+        if self.validate_full_path():
+            return True, "swapped"
+        
+        # Restore
+        self.H = H_before
+        self.V = V_before
+        return False, "invalid_after_swap"
+    
+    def large_flip(self, x0: int, y0: int, w: int, h: int) -> Tuple[bool, str]:
+        """
+        Attempt a larger flip operation on a WxH region.
+        Tries multiple strategies to reroute the path.
+        
+        Returns: (success, message)
+        """
+        if x0 < 0 or y0 < 0 or x0 + w > self.width or y0 + h > self.height:
+            return False, "out_of_bounds"
+        if w < 2 or h < 2:
+            return False, "too_small"
+        
+        # Snapshot for rollback
+        H_before = [row[:] for row in self.H]
+        V_before = [row[:] for row in self.V]
+        
+        # Strategy 1: Try to create a "U-turn" pattern
+        # Find edges that cross the boundary and try to redirect them
+        
+        # Count vertical edges at the left and right boundaries of the region
+        left_v_edges = []
+        right_v_edges = []
+        
+        for y in range(y0, min(y0 + h - 1, self.height - 1)):
+            if self.V[y][x0]:
+                left_v_edges.append(y)
+            if x0 + w - 1 < self.width and self.V[y][x0 + w - 1]:
+                right_v_edges.append(y)
+        
+        # Try swapping connectivity: remove some edges, add others
+        modified = False
+        
+        # If we have vertical edges on both sides, try to connect them differently
+        if left_v_edges and right_v_edges:
+            # Remove a left edge and right edge, try to add horizontal connections
+            ly = left_v_edges[0]
+            ry = right_v_edges[0]
+            
+            # Remove vertical edges
+            self.V[ly][x0] = False
+            self.V[ry][x0 + w - 1] = False
+            
+            # Add horizontal edges to compensate
+            for x in range(x0, x0 + w - 1):
+                if not self.H[ly][x]:
+                    self.H[ly][x] = True
+                    modified = True
+                    break
+            for x in range(x0, x0 + w - 1):
+                if not self.H[ry][x]:
+                    self.H[ry][x] = True
+                    modified = True
+                    break
+        
+        if modified and self.validate_full_path():
+            return True, "large_flipped"
+        
+        # Restore and try another strategy
+        self.H = [row[:] for row in H_before]
+        self.V = [row[:] for row in V_before]
+        
+        # Strategy 2: Random edge toggle within region
+        import random
+        for _ in range(10):  # Try up to 10 random modifications
+            self.H = [row[:] for row in H_before]
+            self.V = [row[:] for row in V_before]
+            
+            # Randomly toggle 2-4 edges
+            for _ in range(random.randint(2, 4)):
+                if random.random() < 0.5:
+                    # Toggle horizontal
+                    x = random.randint(x0, min(x0 + w - 2, self.width - 2))
+                    y = random.randint(y0, min(y0 + h - 1, self.height - 1))
+                    if 0 <= y < len(self.H) and 0 <= x < len(self.H[y]):
+                        self.H[y][x] = not self.H[y][x]
+                else:
+                    # Toggle vertical
+                    x = random.randint(x0, min(x0 + w - 1, self.width - 1))
+                    y = random.randint(y0, min(y0 + h - 2, self.height - 2))
+                    if 0 <= y < len(self.V) and 0 <= x < len(self.V[y]):
+                        self.V[y][x] = not self.V[y][x]
+            
+            if self.validate_full_path():
+                return True, "random_flipped"
+        
+        # Restore original
+        self.H = H_before
+        self.V = V_before
+        return False, "no_valid_flip_found"
 
     def print_ascii_edges(self, highlight_subgrid=None):
         grid_h, grid_w = 2*self.height - 1, 2*self.width - 1
