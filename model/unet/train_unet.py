@@ -95,19 +95,22 @@ def create_dashboard(epoch, epochs, metrics, best_metrics, lr, gpu_mem_used, gpu
     return layout
 
 
-def validate(model, val_loader, device):
-    """Run validation and return metrics."""
+def validate(model, val_loader, device, pos_weight=3.0, diversity_weight=0.5):
+    """Fully vectorized validation with oracle + mean-softmax pooling metrics."""
     model.eval()
     total_loss = 0
     total_pos_loss = 0
     total_act_loss = 0
+    total_div_loss = 0
     n_batches = 0
 
-    # Accuracy tracking
+    # Mean-softmax pooled metrics
     pos_correct_top1 = 0
     pos_correct_top5 = 0
-    act_correct_at_gt = 0  # action accuracy at ground-truth position
-    act_correct_at_pred = 0  # action accuracy at predicted position (end-to-end)
+    # Oracle metrics: any hypothesis's argmax matches GT
+    oracle_correct_top1 = 0
+    act_correct_at_gt = 0
+    act_correct_at_pred = 0
     total_samples = 0
 
     with torch.no_grad():
@@ -119,51 +122,69 @@ def validate(model, val_loader, device):
             boundary_masks = batch['boundary_mask'].to(device)
 
             pos_logits, act_logits = model(states)
-            loss, pos_loss, act_loss = compute_loss(
-                pos_logits, act_logits, target_y, target_x, target_action, boundary_masks
+            loss, pos_loss, act_loss, div_loss = compute_loss(
+                pos_logits, act_logits, target_y, target_x, target_action, boundary_masks,
+                pos_weight=pos_weight, diversity_weight=diversity_weight,
             )
 
             total_loss += loss.item()
             total_pos_loss += pos_loss.item()
             total_act_loss += act_loss.item()
+            total_div_loss += div_loss.item()
             n_batches += 1
 
-            # Per-sample accuracy
-            B = states.size(0)
-            for i in range(B):
-                mask = boundary_masks[i]
-                bpos = mask.nonzero(as_tuple=False)
-                if len(bpos) == 0:
-                    continue
+            B, K, H, W = pos_logits.shape
+            batch_idx = torch.arange(B, device=device)
+            mask_flat = boundary_masks.reshape(B, -1).bool()
+            has_boundary = mask_flat.any(dim=1)
 
-                total_samples += 1
-                ty, tx = target_y[i].item(), target_x[i].item()
+            if not has_boundary.any():
+                continue
 
-                # Position accuracy (top-1 and top-5 among boundary positions)
-                pos_scores = pos_logits[i, 0, bpos[:, 0], bpos[:, 1]]
-                topk_k = min(5, len(pos_scores))
+            # Mean-softmax pooling: average K probability distributions
+            pos_flat = pos_logits.reshape(B, K, -1)                  # [B, K, H*W]
+            mask_k = mask_flat.unsqueeze(1).expand_as(pos_flat)
+            pos_masked_k = pos_flat.masked_fill(~mask_k, float('-inf'))
+            probs_k = torch.softmax(pos_masked_k, dim=-1)            # [B, K, H*W]
+            pos_pooled = probs_k.mean(dim=1)                          # [B, H*W]
 
-                top1_idx = pos_scores.argmax()
-                pred_y1, pred_x1 = bpos[top1_idx, 0].item(), bpos[top1_idx, 1].item()
-                if pred_y1 == ty and pred_x1 == tx:
-                    pos_correct_top1 += 1
+            # Top-1 from pooled probabilities
+            top1_flat = pos_pooled.argmax(dim=1)
+            pred_y1 = top1_flat // W
+            pred_x1 = top1_flat % W
+            pos_top1 = (pred_y1 == target_y) & (pred_x1 == target_x) & has_boundary
 
-                topk_indices = pos_scores.topk(topk_k).indices
-                for ki in topk_indices:
-                    py, px = bpos[ki, 0].item(), bpos[ki, 1].item()
-                    if py == ty and px == tx:
-                        pos_correct_top5 += 1
-                        break
+            # Top-5
+            topk_flat = pos_pooled.topk(5, dim=1).indices             # [B, 5]
+            topk_y = topk_flat // W
+            topk_x = topk_flat % W
+            pos_top5 = (
+                (topk_y == target_y.unsqueeze(1)) & (topk_x == target_x.unsqueeze(1))
+            ).any(dim=1) & has_boundary
 
-                # Action accuracy at ground-truth position
-                act_at_gt = act_logits[i, :, ty, tx].argmax().item()
-                if act_at_gt == target_action[i].item():
-                    act_correct_at_gt += 1
+            # Oracle: does ANY hypothesis's argmax match GT?
+            per_hyp_masked = pos_masked_k                             # [B, K, H*W]
+            per_hyp_argmax = per_hyp_masked.argmax(dim=-1)            # [B, K]
+            per_hyp_y = per_hyp_argmax // W
+            per_hyp_x = per_hyp_argmax % W
+            oracle_hit = (
+                (per_hyp_y == target_y.unsqueeze(1)) & (per_hyp_x == target_x.unsqueeze(1))
+            ).any(dim=1) & has_boundary
 
-                # Action accuracy at predicted position (end-to-end metric)
-                act_at_pred = act_logits[i, :, pred_y1, pred_x1].argmax().item()
-                if act_at_pred == target_action[i].item() and pred_y1 == ty and pred_x1 == tx:
-                    act_correct_at_pred += 1
+            # Action @ GT position
+            act_at_gt = act_logits[batch_idx, :, target_y, target_x].argmax(dim=1)
+            act_gt_ok = (act_at_gt == target_action) & has_boundary
+
+            # End-to-end: action @ predicted position
+            act_at_pred = act_logits[batch_idx, :, pred_y1, pred_x1].argmax(dim=1)
+            e2e_ok = (act_at_pred == target_action) & pos_top1
+
+            pos_correct_top1 += pos_top1.sum().item()
+            pos_correct_top5 += pos_top5.sum().item()
+            oracle_correct_top1 += oracle_hit.sum().item()
+            act_correct_at_gt += act_gt_ok.sum().item()
+            act_correct_at_pred += e2e_ok.sum().item()
+            total_samples += has_boundary.sum().item()
 
     n = max(n_batches, 1)
     s = max(total_samples, 1)
@@ -171,8 +192,10 @@ def validate(model, val_loader, device):
         'loss': total_loss / n,
         'pos_loss': total_pos_loss / n,
         'act_loss': total_act_loss / n,
+        'div_loss': total_div_loss / n,
         'pos_acc_top1': pos_correct_top1 / s,
         'pos_acc_top5': pos_correct_top5 / s,
+        'oracle_acc_top1': oracle_correct_top1 / s,
         'act_acc_at_gt': act_correct_at_gt / s,
         'act_acc_e2e': act_correct_at_pred / s,
     }
@@ -199,6 +222,7 @@ def train(args):
         val_ratio=args.val_split,
         boundary_dilation=args.boundary_dilation,
         seed=42,
+        augment=not args.no_augment,
     )
     console.print(f"  Train: [green]{len(train_ds)}[/green] effective operation samples")
     console.print(f"  Val: [green]{len(val_ds)}[/green] effective operation samples")
@@ -214,7 +238,10 @@ def train(args):
 
     # Create model
     console.print("\n[bold]Creating OperationNet...[/bold]")
-    model = OperationNet(in_channels=5, base_features=args.base_features).to(device)
+    model = OperationNet(
+        in_channels=5, base_features=args.base_features,
+        n_hypotheses=args.n_hypotheses,
+    ).to(device)
     n_params = count_parameters(model)
     console.print(f"  Parameters: [green]{n_params:,}[/green]")
 
@@ -246,8 +273,8 @@ def train(args):
     csv_writer = csv.writer(csv_file)
     csv_writer.writerow([
         'epoch', 'train_loss', 'train_pos_loss', 'train_act_loss',
-        'val_loss', 'val_pos_loss', 'val_act_loss',
-        'val_pos_acc_top1', 'val_pos_acc_top5',
+        'val_loss', 'val_pos_loss', 'val_act_loss', 'val_div_loss',
+        'val_pos_acc_top1', 'val_pos_acc_top5', 'val_oracle_acc_top1',
         'val_act_acc_at_gt', 'val_act_acc_e2e',
         'learning_rate', 'epoch_time'
     ])
@@ -256,7 +283,7 @@ def train(args):
     best_val_loss = float('inf')
     best_metrics = {
         'val_loss': float('inf'), 'epoch': 0,
-        'pos_top1': 0, 'pos_top5': 0,
+        'pos_top1': 0, 'pos_top5': 0, 'oracle_top1': 0,
         'act_at_gt': 0, 'act_e2e': 0,
     }
     global_step = 0
@@ -287,9 +314,11 @@ def train(args):
             optimizer.zero_grad()
 
             pos_logits, act_logits = model(states)
-            loss, pos_loss, act_loss = compute_loss(
+            loss, pos_loss, act_loss, div_loss = compute_loss(
                 pos_logits, act_logits, target_y, target_x,
-                target_action, boundary_masks
+                target_action, boundary_masks,
+                pos_weight=args.pos_weight,
+                diversity_weight=args.diversity_weight,
             )
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
@@ -306,7 +335,9 @@ def train(args):
             pbar.set_postfix(loss=f"{loss.item():.4f}")
 
         # ---- Validate ----
-        val_metrics = validate(model, val_loader, device)
+        val_metrics = validate(model, val_loader, device,
+                               pos_weight=args.pos_weight,
+                               diversity_weight=args.diversity_weight)
 
         epoch_time = time.time() - epoch_start
         avg_train_loss = epoch_loss / max(n_batches, 1)
@@ -326,6 +357,7 @@ def train(args):
                 'epoch': epoch,
                 'pos_top1': val_metrics['pos_acc_top1'],
                 'pos_top5': val_metrics['pos_acc_top5'],
+                'oracle_top1': val_metrics['oracle_acc_top1'],
                 'act_at_gt': val_metrics['act_acc_at_gt'],
                 'act_e2e': val_metrics['act_acc_e2e'],
             }
@@ -359,8 +391,10 @@ def train(args):
                 'loss': val_loss,
                 'pos_loss': val_metrics['pos_loss'],
                 'act_loss': val_metrics['act_loss'],
+                'div_loss': val_metrics['div_loss'],
                 'pos_acc_top1': val_metrics['pos_acc_top1'],
                 'pos_acc_top5': val_metrics['pos_acc_top5'],
+                'oracle_top1': val_metrics['oracle_acc_top1'],
                 'act_acc@gt': val_metrics['act_acc_at_gt'],
                 'act_acc_e2e': val_metrics['act_acc_e2e'],
             },
@@ -376,7 +410,9 @@ def train(args):
         csv_writer.writerow([
             epoch, avg_train_loss, avg_train_pos, avg_train_act,
             val_loss, val_metrics['pos_loss'], val_metrics['act_loss'],
+            val_metrics['div_loss'],
             val_metrics['pos_acc_top1'], val_metrics['pos_acc_top5'],
+            val_metrics['oracle_acc_top1'],
             val_metrics['act_acc_at_gt'], val_metrics['act_acc_e2e'],
             current_lr, epoch_time,
         ])
@@ -391,6 +427,7 @@ def train(args):
         f"Best val loss: {best_metrics['val_loss']:.4f}\n"
         f"Position accuracy (top-1): {best_metrics['pos_top1']:.2%}\n"
         f"Position accuracy (top-5): {best_metrics['pos_top5']:.2%}\n"
+        f"Oracle accuracy (top-1): {best_metrics['oracle_top1']:.2%}\n"
         f"Action accuracy @ GT pos: {best_metrics['act_at_gt']:.2%}\n"
         f"End-to-end accuracy: {best_metrics['act_e2e']:.2%}\n"
         f"Checkpoint: {args.checkpoint_dir}/best.pt",
@@ -403,16 +440,24 @@ def main():
     parser.add_argument('--data_path', type=str,
                         default='model/unet/unet_data.pt')
     parser.add_argument('--checkpoint_dir', type=str, default='nn_checkpoints/unet')
-    parser.add_argument('--epochs', type=int, default=80)
-    parser.add_argument('--batch_size', type=int, default=256)
-    parser.add_argument('--learning_rate', type=float, default=1e-3)
+    parser.add_argument('--epochs', type=int, default=20)
+    parser.add_argument('--batch_size', type=int, default=128)
+    parser.add_argument('--learning_rate', type=float, default=3e-4)
     parser.add_argument('--weight_decay', type=float, default=1e-4)
     parser.add_argument('--warmup_steps', type=int, default=500)
     parser.add_argument('--grad_clip', type=float, default=1.0)
     parser.add_argument('--val_split', type=float, default=0.1)
-    parser.add_argument('--base_features', type=int, default=24)
-    parser.add_argument('--boundary_dilation', type=int, default=2)
-    parser.add_argument('--num_workers', type=int, default=0)
+    parser.add_argument('--base_features', type=int, default=48)
+    parser.add_argument('--boundary_dilation', type=int, default=1)
+    parser.add_argument('--num_workers', type=int, default=4)
+    parser.add_argument('--pos_weight', type=float, default=10.0,
+                        help='Position loss multiplier')
+    parser.add_argument('--n_hypotheses', type=int, default=4,
+                        help='Number of WTA position hypotheses')
+    parser.add_argument('--diversity_weight', type=float, default=0.5,
+                        help='Weight for winner-assignment entropy regularizer')
+    parser.add_argument('--no_augment', action='store_true',
+                        help='Disable training augmentation')
 
     args = parser.parse_args()
 

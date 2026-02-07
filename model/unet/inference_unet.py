@@ -252,7 +252,7 @@ def run_inference(
     current_crossings = initial_crossings
 
     # Dilated boundary mask for candidate positions
-    dilated_mask = dilate_mask(boundary_mask, dilation=2)
+    dilated_mask = dilate_mask(boundary_mask, dilation=1)
     # Also mask to valid grid area
     valid_area = torch.zeros(MAX_GRID_SIZE, MAX_GRID_SIZE)
     valid_area[:grid_h, :grid_w] = 1.0
@@ -279,8 +279,15 @@ def run_inference(
             if len(bpos) == 0:
                 break
 
-            # Score positions
-            pos_scores = pos_logits[0, 0, bpos[:, 0], bpos[:, 1]]
+            # Pool across K hypotheses: mean-softmax over boundary
+            K = pos_logits.shape[1]
+            pos_flat = pos_logits[0].reshape(K, -1)            # [K, H*W]
+            mask_1d = dilated_mask.reshape(-1).bool()
+            pos_flat_masked = pos_flat.masked_fill(~mask_1d.unsqueeze(0), float('-inf'))
+            probs_k = torch.softmax(pos_flat_masked, dim=-1)   # [K, H*W]
+            pooled_flat = probs_k.mean(dim=0)                   # [H*W]
+            pooled_2d = pooled_flat.reshape(MAX_GRID_SIZE, MAX_GRID_SIZE)
+            pos_scores = pooled_2d[bpos[:, 0], bpos[:, 1]]
             k_pos = min(top_k_pos, len(pos_scores))
             top_pos_indices = pos_scores.topk(k_pos).indices
 
@@ -373,7 +380,8 @@ def load_model(checkpoint_path: str, device: torch.device):
     args = checkpoint.get('args', {})
     model = OperationNet(
         in_channels=5,
-        base_features=args.get('base_features', 64),
+        base_features=args.get('base_features', 48),
+        n_hypotheses=args.get('n_hypotheses', 4),
     ).to(device)
 
     model.load_state_dict(checkpoint['model_state_dict'])
@@ -691,8 +699,8 @@ def main():
     parser = argparse.ArgumentParser(description='OperationNet (U-Net) Inference & Evaluation')
     parser.add_argument('--checkpoint', default='nn_checkpoints/unet/best.pt',
                         help='Path to trained model checkpoint')
-    parser.add_argument('--data', default='model/unet/unet_data.pkl',
-                        help='Path to unet_data.pkl for evaluation')
+    parser.add_argument('--data', default='model/unet/unet_data.pt',
+                        help='Path to unet_data.pt for evaluation')
     parser.add_argument('--n_samples', type=int, default=50,
                         help='Number of test samples to evaluate')
     parser.add_argument('--max_steps', type=int, default=50,

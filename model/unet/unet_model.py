@@ -4,10 +4,15 @@ OperationNet: U-Net for per-pixel Hamiltonian path operation prediction.
 Maintains full spatial resolution — no compression bottleneck.
 Predicts WHERE to apply operations (position head) and WHAT to apply (action head).
 
+Uses Winner-Takes-All (WTA) multi-hypothesis position prediction:
+K independent position heads each learn to specialize on different modes.
+Only the hypothesis closest to GT receives gradients during training.
+
 Input: 5-channel 32x32 tensor (zones, H_edges, V_edges, boundary_mask, crossing_indicator)
-Output: position scores (1x32x32) + action logits (12x32x32)
+Output: position scores (Kx32x32) + action logits (12x32x32)
 """
 
+import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -76,131 +81,119 @@ class UpBlock(nn.Module):
 
 class OperationNet(nn.Module):
     """
-    Lightweight ResU-Net for per-pixel operation prediction.
+    Lightweight ResU-Net with WTA multi-hypothesis position prediction.
 
     Architecture:
-        Encoder: 3 levels [24, 48, 96] with additive residual blocks
-        Bottleneck: 96 -> 96 (ResBlock + Dropout)
+        Encoder: 3 levels [f, 2f, 4f] with additive residual blocks
+        Bottleneck: 4f -> 4f (ResBlock + Dropout)
         Decoder: 3 levels with skip connections
-        Heads: position (1ch) + action (12ch)
+        Heads: position (K hypotheses) + action (12ch)
 
     Input: [B, 5, 32, 32]
-    Output: position_logits [B, 1, 32, 32], action_logits [B, 12, 32, 32]
+    Output: position_logits [B, K, 32, 32], action_logits [B, 12, 32, 32]
     """
 
-    def __init__(self, in_channels=5, base_features=24):
+    def __init__(self, in_channels=5, base_features=24, n_hypotheses=4):
         super().__init__()
+        self.n_hypotheses = n_hypotheses
 
-        f = base_features  # 24
+        f = base_features
 
         # Encoder
-        self.enc1 = DownBlock(in_channels, f)      # 5 -> 24
-        self.enc2 = DownBlock(f, f * 2)             # 24 -> 48
-        self.enc3 = DownBlock(f * 2, f * 4)         # 48 -> 96
+        self.enc1 = DownBlock(in_channels, f)      # 5 -> f
+        self.enc2 = DownBlock(f, f * 2)             # f -> 2f
+        self.enc3 = DownBlock(f * 2, f * 4)         # 2f -> 4f
 
         # Bottleneck
         self.bottleneck = nn.Sequential(
-            ResBlock(f * 4),                         # 96 -> 96
+            ResBlock(f * 4),
             nn.Dropout2d(0.1),
         )
 
         # Decoder
-        self.dec3 = UpBlock(f * 4, f * 4, f * 2)   # 96+96 -> 48
-        self.dec2 = UpBlock(f * 2, f * 2, f)        # 48+48 -> 24
-        self.dec1 = UpBlock(f, f, f)                 # 24+24 -> 24
+        self.dec3 = UpBlock(f * 4, f * 4, f * 2)   # 4f+4f -> 2f
+        self.dec2 = UpBlock(f * 2, f * 2, f)        # 2f+2f -> f
+        self.dec1 = UpBlock(f, f, f)                 # f+f -> f
 
         # Output heads
-        self.position_head = nn.Conv2d(f, 1, 1)              # 24 -> 1
-        self.action_head = nn.Conv2d(f, NUM_ACTIONS, 1)       # 24 -> 12
+        self.position_head = nn.Conv2d(f, n_hypotheses, 1)   # f -> K hypotheses
+        self.action_head = nn.Conv2d(f, NUM_ACTIONS, 1)       # f -> 12
 
     def forward(self, x):
         # Encoder
-        e1, d1 = self.enc1(x)          # e1: [B,24,32,32], d1: [B,24,16,16]
-        e2, d2 = self.enc2(d1)         # e2: [B,48,16,16], d2: [B,48,8,8]
-        e3, d3 = self.enc3(d2)         # e3: [B,96,8,8],   d3: [B,96,4,4]
+        e1, d1 = self.enc1(x)          # e1: [B,f,32,32], d1: [B,f,16,16]
+        e2, d2 = self.enc2(d1)         # e2: [B,2f,16,16], d2: [B,2f,8,8]
+        e3, d3 = self.enc3(d2)         # e3: [B,4f,8,8],   d3: [B,4f,4,4]
 
         # Bottleneck
-        b = self.bottleneck(d3)        # [B, 96, 4, 4]
+        b = self.bottleneck(d3)        # [B, 4f, 4, 4]
 
         # Decoder with skip connections
-        u3 = self.dec3(b, e3)          # [B, 48, 8, 8]
-        u2 = self.dec2(u3, e2)         # [B, 24, 16, 16]
-        u1 = self.dec1(u2, e1)         # [B, 24, 32, 32]
+        u3 = self.dec3(b, e3)          # [B, 2f, 8, 8]
+        u2 = self.dec2(u3, e2)         # [B, f, 16, 16]
+        u1 = self.dec1(u2, e1)         # [B, f, 32, 32]
 
         # Heads
-        position_logits = self.position_head(u1)   # [B, 1, 32, 32]
+        position_logits = self.position_head(u1)   # [B, K, 32, 32]
         action_logits = self.action_head(u1)        # [B, 12, 32, 32]
 
         return position_logits, action_logits
 
 
+
 def compute_loss(position_logits, action_logits, target_y, target_x, target_action,
-                 boundary_masks, label_smoothing=0.1):
+                 boundary_masks, label_smoothing=0.1, pos_weight=3.0,
+                 diversity_weight=0.5):
     """
-    Factored loss that avoids extreme class imbalance.
+    Winner-Takes-All (WTA) loss with diversity regularizer.
 
-    Args:
-        position_logits: [B, 1, 32, 32] per-pixel position scores
-        action_logits: [B, 12, 32, 32] per-pixel action class logits
-        target_y: [B] ground-truth y positions
-        target_x: [B] ground-truth x positions
-        target_action: [B] ground-truth action class (0-11)
-        boundary_masks: [B, 32, 32] binary mask of valid prediction positions
-        label_smoothing: smoothing factor for action loss
+    1. Each of K hypotheses produces a softmax over boundary positions.
+    2. Only the closest hypothesis to GT receives gradients (WTA).
+    3. Diversity: soft entropy over winner assignments — penalizes mode collapse
+       where one hypothesis wins everything.
 
-    Returns:
-        total_loss, position_loss, action_loss
+    Returns: total_loss, pos_loss, act_loss, diversity_loss
     """
-    batch_size = position_logits.size(0)
+    B, K, H, W = position_logits.shape
     device = position_logits.device
+    batch_idx = torch.arange(B, device=device)
 
-    pos_loss_total = torch.tensor(0.0, device=device)
-    act_loss_total = torch.tensor(0.0, device=device)
-    valid_count = 0
+    # Flatten spatial dims
+    pos_flat = position_logits.reshape(B, K, -1)               # [B, K, H*W]
+    mask_flat = boundary_masks.reshape(B, -1).bool()            # [B, H*W]
 
-    for i in range(batch_size):
-        # Get boundary positions for this sample
-        mask = boundary_masks[i]  # [32, 32]
-        boundary_pos = mask.nonzero(as_tuple=False)  # [N_boundary, 2] (y, x)
+    target_flat = target_y * W + target_x                       # [B]
+    mask_flat[batch_idx, target_flat] = True                     # ensure GT in mask
 
-        if len(boundary_pos) == 0:
-            continue
+    # Expand mask for all K hypotheses
+    mask_k = mask_flat.unsqueeze(1).expand_as(pos_flat)         # [B, K, H*W]
+    pos_masked = pos_flat.masked_fill(~mask_k, float('-inf'))
 
-        # Position loss: softmax over boundary positions only
-        pos_scores = position_logits[i, 0, boundary_pos[:, 0], boundary_pos[:, 1]]  # [N_boundary]
+    # Log-softmax per hypothesis over boundary positions
+    log_probs = F.log_softmax(pos_masked, dim=-1)               # [B, K, H*W]
 
-        # Find target position index in boundary list
-        ty, tx = target_y[i].item(), target_x[i].item()
-        target_match = (boundary_pos[:, 0] == ty) & (boundary_pos[:, 1] == tx)
+    # CE per hypothesis: -log_prob at GT position
+    target_idx = target_flat.view(B, 1, 1).expand(B, K, 1)     # [B, K, 1]
+    per_hyp_loss = -log_probs.gather(2, target_idx).squeeze(2)  # [B, K]
 
-        if target_match.any():
-            target_idx = target_match.nonzero(as_tuple=False)[0, 0]
-            pos_loss_total += F.cross_entropy(pos_scores.unsqueeze(0), target_idx.unsqueeze(0))
-        else:
-            # Target not in boundary mask — use nearest boundary position
-            dists = (boundary_pos[:, 0].float() - ty) ** 2 + (boundary_pos[:, 1].float() - tx) ** 2
-            nearest_idx = dists.argmin()
-            pos_loss_total += F.cross_entropy(pos_scores.unsqueeze(0), nearest_idx.unsqueeze(0))
+    # WTA: min across hypotheses — gradients flow only to winner
+    pos_loss = per_hyp_loss.min(dim=1).values.mean()
 
-        # Action loss: at ground-truth position, predict correct action
-        action_at_target = action_logits[i, :, ty, tx]  # [12]
-        act_loss_total += F.cross_entropy(
-            action_at_target.unsqueeze(0),
-            target_action[i:i+1],
-            label_smoothing=label_smoothing,
-        )
+    # Diversity: soft winner assignment entropy
+    # softmin gives probability of each hypothesis being the winner
+    winner_probs = F.softmax(-per_hyp_loss, dim=1)              # [B, K]
+    avg_usage = winner_probs.mean(dim=0)                         # [K]
+    # Max entropy = log(K) when uniform; diversity_loss=0 when perfectly balanced
+    diversity_loss = (avg_usage * (avg_usage + 1e-8).log()).sum() + math.log(K)
 
-        valid_count += 1
+    # Action loss at GT position
+    act_at_gt = action_logits[batch_idx, :, target_y, target_x]
+    act_loss = F.cross_entropy(
+        act_at_gt, target_action, label_smoothing=label_smoothing
+    )
 
-    if valid_count == 0:
-        return torch.tensor(0.0, device=device, requires_grad=True), \
-               torch.tensor(0.0, device=device), torch.tensor(0.0, device=device)
-
-    pos_loss = pos_loss_total / valid_count
-    act_loss = act_loss_total / valid_count
-    total_loss = pos_loss + act_loss
-
-    return total_loss, pos_loss, act_loss
+    total_loss = pos_weight * pos_loss + act_loss + diversity_weight * diversity_loss
+    return total_loss, pos_loss, act_loss, diversity_loss
 
 
 def count_parameters(model):
