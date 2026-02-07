@@ -8,12 +8,16 @@ import numpy as np
 from torch.utils.data import Dataset
 from pathlib import Path
 from typing import Dict, List
+import sys
+
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+from operations import HamiltonianSTL
 
 
 class HamiltonianDataset(Dataset):
-    """Dataset for CNN+RNN training."""
+    """Dataset for CNN+RNN training with actual path edges."""
     
-    def __init__(self, data_file: str, max_seq_len: int = 100, max_grid_size: int = 100):
+    def __init__(self, data_file: str, max_seq_len: int = 50, max_grid_size: int = 30):
         self.data_file = Path(data_file)
         self.max_seq_len = max_seq_len
         self.max_grid_size = max_grid_size
@@ -38,31 +42,45 @@ class HamiltonianDataset(Dataset):
     def __len__(self):
         return len(self.records)
     
+    def _get_initial_path_edges(self, grid_W: int, grid_H: int) -> tuple:
+        """Get initial zigzag path edge matrices."""
+        h = HamiltonianSTL(grid_W, grid_H, init_pattern='zigzag')
+        H_edges = np.array(h.H, dtype=np.float32)
+        V_edges = np.array(h.V, dtype=np.float32)
+        return H_edges, V_edges
+    
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
-        """Get a single training example."""
+        """Get a single training example with actual path edges."""
         record = self.records[idx]
         
         grid_W = record['grid_W']
         grid_H = record['grid_H']
         
         # Create multi-channel grid state
-        # Channel 0: Horizontal edges (placeholder)
-        # Channel 1: Vertical edges (placeholder)
+        # Channel 0: Horizontal edges (actual path)
+        # Channel 1: Vertical edges (actual path)
         # Channel 2: Zone boundaries
         # Channel 3: Grid mask
         grid_state = torch.zeros(4, self.max_grid_size, self.max_grid_size)
         
-        # Fill zone grid
+        # Get initial path edges
+        H_edges, V_edges = self._get_initial_path_edges(grid_W, grid_H)
+        
+        # Channel 0: Horizontal edges
+        grid_state[0, :grid_H, :grid_W-1] = torch.from_numpy(H_edges)
+        
+        # Channel 1: Vertical edges  
+        grid_state[1, :grid_H-1, :grid_W] = torch.from_numpy(V_edges)
+        
+        # Channel 2: Zone grid (normalized)
         if 'zone_grid' in record:
             zone_grid = np.array(record['zone_grid']).reshape(grid_H, grid_W)
-            zone_padded = np.zeros((self.max_grid_size, self.max_grid_size))
-            zone_padded[:grid_H, :grid_W] = zone_grid
-            grid_state[2] = torch.from_numpy(zone_padded).float()
+            max_zone = max(zone_grid.max(), 1)
+            zone_normalized = zone_grid / max_zone
+            grid_state[2, :grid_H, :grid_W] = torch.from_numpy(zone_normalized).float()
         
-        # Grid mask (1 where grid exists, 0 elsewhere)
-        mask = torch.zeros(self.max_grid_size, self.max_grid_size)
-        mask[:grid_H, :grid_W] = 1.0
-        grid_state[3] = mask
+        # Channel 3: Grid mask (1 where grid exists, 0 elsewhere)
+        grid_state[3, :grid_H, :grid_W] = 1.0
         
         # Global features
         initial_crossings = record.get('initial_crossings', 0)

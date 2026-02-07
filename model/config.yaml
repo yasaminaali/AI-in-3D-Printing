@@ -19,58 +19,59 @@ model:
     type: "GRU"  # Paper: Gated Recurrent Unit
     hidden_size: 256
     num_layers: 2
-    dropout: 0.2
+    dropout: 0.3  # Increased dropout to prevent overfitting
     bidirectional: false  # Sequential operations are directional
     
   # Operation prediction head
   predictor:
-    sequence_length: 100  # Truncated to practical length (data has outliers at 490)
-    operation_types: ["T", "F", "N"]  # Transpose, Flip, No-op
+    sequence_length: 200  # Increased to capture full optimization trajectories (was 50)
+    operation_types: ["T", "F", "N"]  # Transpose, Flip, No-op (N = stop token)
     max_positions: 30  # Focus on 30x30 grids (most common in dataset)
     flip_variants: ["n", "s", "e", "w"]  # north, south, east, west
     transpose_variants: ["nl", "nr", "sl", "sr", "eb"]  # corner-based variants
 
 # Training Configuration (Optimized for RTX 5090 32GB)
 training:
-  epochs: 300              # Train longer for convergence
-  learning_rate: 0.001
-  optimizer: "Adam"
-  weight_decay: 0.0001
-  scheduler: "ReduceLROnPlateau"
-  scheduler_patience: 15    # More patience before reducing LR
-  early_stopping_patience: 50 # Don't stop too early - model needs time!
+  epochs: 100              # Full training with early stopping
+  learning_rate: 0.001     # AdamW learning rate
+  min_learning_rate: 0.00001  # Minimum LR for cosine annealing
+  warmup_epochs: 2         # Warmup epochs
+  optimizer: "AdamW"       # AdamW for better weight decay handling
+  weight_decay: 0.01       # Regularization
+  scheduler: "CosineAnnealing"
+  dropout: 0.3             # Dropout rate
   gradient_clip: 1.0
   
-  # Batch sizes optimized for RTX 5090 (32GB VRAM)
-  # 4× larger than RTX 4080 for massive speedup + better gradients
-  batch_sizes:
-    "30x30": 256   # 4× larger - ~45 batches → ~12 batches per epoch
-    "50x50": 128   # 4× larger
-    "80x80": 64    # 4× larger
-    "default": 32  # Fallback for other sizes
+  # Batch size reduced for longer sequences (200 vs 50)
+  batch_size: 16  # Reduced from 64 to accommodate 4x longer sequences
+  
+  # Full sequence training (ALL operations, not just effective)
+  effective_only: false    # Train on ALL ops (setup + reducing)
+  max_trajectories: null   # Process ALL trajectories (null = no limit)
+  cache_file: "full_trajectories.pkl"  # Cache preprocessed samples
   
   # Loss weights
   loss_weights:
     operation_type: 1.0
     position_x: 1.0
     position_y: 1.0
-    variant: 0.5
-    crossing_reduction: 2.0  # Emphasize crossing minimization
-    sequence_validity: 1.0  # Ensure valid Hamiltonian paths
+    variant: 1.0
+  label_smoothing: 0.1
+  early_stopping_patience: 20  # Stop if no improvement for 20 epochs
 
 # Data Configuration
 data:
-  dataset_path: "output/datasets/combined_dataset.jsonl"
+  dataset_path: "/root/AI-in-3D-Printing/combined_dataset.jsonl"
   output_dir: "nn_data"
   
-  # Grid size categories for stratified split
-  grid_sizes: [10, 15, 20, 25, 30]
+  # Grid size
+  grid_size: 30
   
   # Filtering
   filter:
     min_improvement: 1  # Discard records with no improvement
     max_sequence_length: 500
-    min_crossing_reduction_ratio: 0.1  # At least 10% improvement
+    min_crossing_reduction_ratio: 0.4  # At least 40% improvement
     
   # Stratified split (80/10/10 per grid size)
   split:
@@ -80,11 +81,12 @@ data:
     sort_by: "final_crossings"  # Sort by performance for stratification
     ascending: true  # Best performers first (for training priority)
     
-  # Augmentation (optional, for robustness)
+  # Augmentation (enabled for robustness and regularization)
   augmentation:
-    enabled: false
-    rotation: false  # Hamiltonian paths have directional constraints
-    flip_grid: false
+    enabled: true
+    dropout_operations: 0.1  # Randomly drop 10% of operations in sequence
+    noise_positions: 0.05    # Add small noise to encourage generalization
+    shuffle_equivalent: false  # Don't shuffle - order matters
     zone_permutation: false
 
 # Validation & Testing Configuration
@@ -93,9 +95,9 @@ validation:
   validate_every_n_epochs: 1
   
   # Performance statistics computation (slow, toggle off for speed)
-  compute_performance_stats: false  # DISABLED - set to true only when needed
-  stats_sample_size: 10  # Number of samples for fast stats computation
-  detailed_stats_every_n_epochs: 5  # Full detailed stats every N epochs (if compute_performance_stats is true)
+  compute_performance_stats: false  # DISABLED for speed
+  stats_sample_size: 20  # Number of samples for fast stats computation
+  detailed_stats_every_n_epochs: 25  # Full detailed stats every N epochs
   
   # Metrics to track
   metrics:
@@ -108,9 +110,9 @@ validation:
 # Checkpointing Configuration
 checkpointing:
   checkpoint_dir: "nn_checkpoints"
-  save_best_only: true  # Only save when validation improves
-  save_every_n_epochs: 10  # Also save periodic checkpoint every N epochs
-  keep_last_n_checkpoints: 3  # Keep only last N periodic checkpoints (0 = keep all)
+  save_best_only: false  # Save best + periodic
+  save_every_n_epochs: 20  # Save every 20 epochs (5 checkpoints in 100 epochs)
+  keep_last_n_checkpoints: 5  # Keep last 5 periodic checkpoints
 
 # Logging Configuration
 logging:
@@ -120,12 +122,12 @@ logging:
   log_interval: 10  # Log every N batches
   console_output: true  # Print to console
   
-# Hardware Configuration (STRICTLY GPU)
+# Hardware Configuration
 hardware:
-  device: "cuda"  # Force GPU usage - will error if GPU unavailable
-  num_workers: 0  # DataLoader workers (0 = main process, faster for small datasets)
+  device: "cuda"  # GPU - RTX 5090 with PyTorch 2.7.0 nightly
+  num_workers: 8  # DataLoader workers (0 = main process, faster for small datasets)
   pin_memory: true
-  
+  persistent_workers: true  # Keep workers alive between epochs for speed  
 # Performance Tuning
 performance:
   # Gradient accumulation (effective batch size = batch_size * accumulation_steps)
@@ -133,11 +135,9 @@ performance:
   gradient_accumulation_steps: 1
   
   # Mixed precision training - ENABLED for RTX 5090
-  # Gives 2× speedup on modern GPUs with no quality loss
   mixed_precision: true
-  
+
   # Compile model (PyTorch 2.0+ feature)
-  # Can give 10-20% speedup but takes time to compile
   compile_model: false
   
 # Inference Configuration

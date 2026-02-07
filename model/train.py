@@ -80,22 +80,56 @@ class RichTrainer:
             border_style="cyan"
         ))
         
-        # Optimizer
-        self.optimizer = optim.Adam(
-            self.model.parameters(),
-            lr=self.train_config['learning_rate'],
-            weight_decay=self.train_config['weight_decay']
-        )
+        # Optimizer - support AdamW
+        optimizer_type = self.train_config.get('optimizer', 'Adam')
+        if optimizer_type == 'AdamW':
+            self.optimizer = optim.AdamW(
+                self.model.parameters(),
+                lr=self.train_config['learning_rate'],
+                weight_decay=self.train_config['weight_decay'],
+                betas=(0.9, 0.999)
+            )
+        else:
+            self.optimizer = optim.Adam(
+                self.model.parameters(),
+                lr=self.train_config['learning_rate'],
+                weight_decay=self.train_config['weight_decay']
+            )
         
-        self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-            self.optimizer,
-            mode='min',
-            patience=self.train_config['scheduler_patience']
-        )
+        # Scheduler - support CosineAnnealing
+        scheduler_type = self.train_config.get('scheduler', 'ReduceLROnPlateau')
+        if scheduler_type == 'CosineAnnealing':
+            min_lr = self.train_config.get('min_learning_rate', 1e-6)
+            self.scheduler = optim.lr_scheduler.CosineAnnealingLR(
+                self.optimizer,
+                T_max=self.train_config['epochs'],
+                eta_min=min_lr
+            )
+            self.scheduler_type = 'cosine'
+        else:
+            self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+                self.optimizer,
+                mode='min',
+                patience=self.train_config['scheduler_patience']
+            )
+            self.scheduler_type = 'plateau'
         
-        # Loss
+        # Warmup settings
+        self.warmup_epochs = self.train_config.get('warmup_epochs', 0)
+        self.base_lr = self.train_config['learning_rate']
+        
+        # Teacher forcing decay
+        self.tf_ratio = self.train_config.get('teacher_forcing_ratio', 0.5)
+        self.tf_decay = self.train_config.get('teacher_forcing_decay', 1.0)
+        
+        # Loss with label smoothing
         max_pos = self.config['model']['predictor']['max_positions']
-        self.criterion = HamiltonianLoss(self.train_config['loss_weights'], max_positions=max_pos)
+        label_smoothing = self.train_config.get('label_smoothing', 0.0)
+        self.criterion = HamiltonianLoss(
+            self.train_config['loss_weights'], 
+            max_positions=max_pos,
+            label_smoothing=label_smoothing
+        )
         
         # State
         self.current_epoch = 0
@@ -552,6 +586,15 @@ class RichTrainer:
             self.current_epoch = epoch
             epoch_start_time = time.time()
             
+            # Apply warmup learning rate
+            if self.warmup_epochs > 0 and epoch <= self.warmup_epochs:
+                warmup_lr = self.base_lr * (epoch / self.warmup_epochs)
+                for param_group in self.optimizer.param_groups:
+                    param_group['lr'] = warmup_lr
+            
+            # Decay teacher forcing ratio
+            current_tf = self.tf_ratio * (self.tf_decay ** (epoch - 1))
+            
             # Train
             train_loss, train_comp = self.train_epoch(train_dataset, epoch)
             self.train_losses.append(train_loss)
@@ -562,7 +605,12 @@ class RichTrainer:
             
             epoch_time = time.time() - epoch_start_time
             
-            self.scheduler.step(val_loss)
+            # Step scheduler (different for cosine vs plateau)
+            if hasattr(self, 'scheduler_type') and self.scheduler_type == 'cosine':
+                if epoch > self.warmup_epochs:  # Don't step during warmup
+                    self.scheduler.step()
+            else:
+                self.scheduler.step(val_loss)
 
             # Early stopping
             if val_loss < self.best_val_loss:

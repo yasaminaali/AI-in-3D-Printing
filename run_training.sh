@@ -1,11 +1,14 @@
 #!/bin/bash
 # RunPod Training Launcher for Linux
+# Trains the CNN+RNN model on RTX 5090
 
-echo "[Neural Network Training Launcher]"
+echo "=========================================="
+echo "Neural Network Training Launcher (Linux)"
+echo "=========================================="
 echo ""
 
 # Check if venv exists
-if [ ! -f "nn_venv/bin/python" ]; then
+if [ ! -f "venv/bin/python" ]; then
     echo "ERROR: Virtual environment not found!"
     echo "Please run setup_runpod.sh first"
     exit 1

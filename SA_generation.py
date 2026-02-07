@@ -934,7 +934,8 @@ def run_sa(
                     variant = random.choice(_transpose_variants(h))
                     mv_try = {"op": "transpose", "variant": variant, "x": x3, "y": y3, "w": 3, "h": 3}
                 else:
-                    variants = {'n': (3, 2), 's': (3, 2), 'e': (2, 3), 'w': (2, 3)}
+                    # FIXED: n/s need 2 wide x 3 tall, e/w need 3 wide x 2 tall
+                    variants = {'n': (2, 3), 's': (2, 3), 'e': (3, 2), 'w': (3, 2)}
                     variant, (w, hh) = random.choice(list(variants.items()))
                     x = random.randint(0, width - w)
                     y = random.randint(0, height - hh)

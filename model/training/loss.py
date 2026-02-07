@@ -1,20 +1,26 @@
 """
 Loss Functions for CNN+RNN Training
+Enhanced with label smoothing and better position encoding.
 """
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from typing import Dict, Tuple
 
 
 class HamiltonianLoss(nn.Module):
-    """Multi-task loss for Hamiltonian path optimization."""
+    """Multi-task loss for Hamiltonian path optimization with improvements."""
     
-    def __init__(self, weights: Dict[str, float], max_positions: int = 100):
+    def __init__(self, weights: Dict[str, float], max_positions: int = 30,
+                 label_smoothing: float = 0.1):
         super().__init__()
         self.weights = weights
         self.max_positions = max_positions
-        self.ce_loss = nn.CrossEntropyLoss(reduction='none')
+        self.label_smoothing = label_smoothing
+        
+        # Use label smoothing for better generalization
+        self.ce_loss = nn.CrossEntropyLoss(reduction='none', label_smoothing=label_smoothing)
         self.mse_loss = nn.MSELoss()
     
     def forward(self, predictions: Dict[str, torch.Tensor], 

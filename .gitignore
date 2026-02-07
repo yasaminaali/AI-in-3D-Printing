@@ -43,6 +43,22 @@ Thumbs.db
 *.log
 *.tmp
 nul
+*.pid
+
+# Data and model artifacts
+*.pkl
+*.png
+*.pt
+nn_checkpoints_*/
+
+# Windows batch files (not used on RunPod/Linux)
+*.bat
+
+# Cloned repo copy
+AI-in-3D-Printing/
+
+# Evaluation outputs
+evaluation_results_test/
 
 # Local config
 config/ansh.yaml
