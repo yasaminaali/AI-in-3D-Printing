@@ -1,34 +1,23 @@
 # Virtual environments
+nn_venv/
 .venv/
 .venv*/
-CCAI/
-nn_venv/
-nn_logs/
-nn_checkpoints/
-nn_data/
+
 # Python cache
 __pycache__/
-__pycache__
-__pycache__*/
 *.pyc
 *.pyo
 
-# Output directories
-output/
-checkpoints*/
-logs/
-
-# Experiment outputs (prevent future bloat)
-*_output/
-test_*/
-experiment_*/
-
-# Results files
-*.json
-!config/*.yaml
+# Large model checkpoints and training data
+FusionModel/nn_checkpoints/
+FusionModel/fusion/fusion_data.pt
+*.pt
 
 # Large dataset files
-combined_dataset.jsonl
+datasets/combined_dataset.jsonl
+
+# Zip archives
+*.zip
 
 # OS files
 .DS_Store
@@ -37,6 +26,7 @@ Thumbs.db
 # IDE
 .idea/
 .vscode/
+.opencode/
 *.swp
 
 # Temp files
@@ -44,6 +34,9 @@ Thumbs.db
 *.tmp
 nul
 
+# Results / output
+*.json
+!config/*.yaml
+
 # Local config
 config/ansh.yaml
-AGENTS.md
