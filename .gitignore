@@ -2,7 +2,7 @@
 nn_venv/
 .venv/
 .venv*/
-
+CCAI/
 # Python cache
 __pycache__/
 *.pyc
