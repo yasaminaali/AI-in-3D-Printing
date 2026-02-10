@@ -2,27 +2,10 @@
 # Zone Crossing Dataset - ~13,650 runs total
 
 machine_id: kazi
-num_workers: 8
+num_workers: 50
 output_dir: output/kazi
 
 assignments:
-  # Grid 50x50 (SA: short, medium, long)
-  - grid: [50, 50]
-    patterns:
-      - left_right
-      - stripes
-      - islands
-      - voronoi
-    sa_configs:
-      - short
-      - medium
-      - long
-    seeds:
-      left_right: 875
-      stripes: 225
-      islands: 175
-      voronoi: 300
-
   # Grid 100x100 (SA: short, medium, long, extra_long)
   - grid: [100, 100]
     patterns:
@@ -36,27 +19,13 @@ assignments:
       - long
       - extra_long
     seeds:
-      left_right: 300
-      stripes: 88
-      islands: 75
-      voronoi: 150
+      stripes: 50
+      islands: 50
+      voronoi: 50
 
   # Grid 32x32 (SA: short, medium, long)
-  - grid: [32, 32]
+  - grid: [80, 80]
     patterns:
-      - voronoi
-    sa_configs:
-      - short
-      - medium
-      - long
-    seeds:
-      voronoi: 175
-
-  # Grid 64x64 (SA: short, medium, long, extra_long)
-  - grid: [64, 64]
-    patterns:
-      - stripes
-      - islands
       - voronoi
     sa_configs:
       - short
@@ -64,38 +33,4 @@ assignments:
       - long
       - extra_long
     seeds:
-      stripes: 175
-      islands: 150
-      voronoi: 225
-
-  # Grid 32x128 (SA: short, medium, long, extra_long)
-  - grid: [32, 128]
-    patterns:
-      - stripes
-      - islands
-      - voronoi
-    sa_configs:
-      - short
-      - medium
-      - long
-      - extra_long
-    seeds:
-      stripes: 175
-      islands: 150
-      voronoi: 225
-
-  # Grid 32x256 (SA: short, medium, long, extra_long)
-  - grid: [32, 256]
-    patterns:
-      - stripes
-      - islands
-      - voronoi
-    sa_configs:
-      - short
-      - medium
-      - long
-      - extra_long
-    seeds:
-      stripes: 125
-      islands: 88
       voronoi: 175
