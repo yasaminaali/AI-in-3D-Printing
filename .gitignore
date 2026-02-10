@@ -15,6 +15,7 @@ FusionModel/fusion/fusion_data.pt
 
 # Large dataset files
 datasets/combined_dataset.jsonl
+Dataset*.jsonl
 
 # Zip archives
 *.zip
