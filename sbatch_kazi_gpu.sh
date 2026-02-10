@@ -18,7 +18,6 @@
 #SBATCH --gres=gpu:h100:4
 #SBATCH --mem=128G
 #SBATCH --time=12:00:00
-#SBATCH --partition=gpubase_bynode_b1
 #SBATCH --account=aip-rnishat
 #SBATCH --qos=normal
 #=============================================================
