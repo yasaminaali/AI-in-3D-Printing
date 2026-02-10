@@ -72,7 +72,7 @@ def gpu_worker(
     # Verify GPU is accessible
     try:
         torch.cuda.set_device(device)
-        mem = torch.cuda.get_device_properties(device).total_mem / (1024**3)
+        mem = torch.cuda.get_device_properties(device).total_memory / (1024**3)
         name = torch.cuda.get_device_name(device)
         print(f"[GPU {gpu_id}] Using {name} ({mem:.0f} GB) - cuda:{device_id}", flush=True)
     except Exception as e:
@@ -279,7 +279,7 @@ def run_gpu_pipeline(
     print(f"Available CUDA devices: {available_gpus}")
     for i in range(available_gpus):
         props = torch.cuda.get_device_properties(i)
-        print(f"  cuda:{i} - {props.name} ({props.total_mem / 1024**3:.0f} GB)")
+        print(f"  cuda:{i} - {props.name} ({props.total_memory / 1024**3:.0f} GB)")
 
     if num_gpus > available_gpus:
         print(f"WARNING: Requested {num_gpus} GPUs but only {available_gpus} available. "
