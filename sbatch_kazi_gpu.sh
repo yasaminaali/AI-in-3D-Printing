@@ -4,6 +4,9 @@
 # 4x NVIDIA H100 SXM 80GB
 #=============================================================
 #
+# First time setup (run ONCE on login node before submitting):
+#   bash setup_env.sh
+#
 # Submit with:   sbatch sbatch_kazi_gpu.sh
 # Check status:  squeue -u $USER
 # Cancel job:    scancel <job_id>
@@ -31,21 +34,23 @@ echo "  Date:      $(date)"
 echo "=============================================="
 
 # --- Module loading ---
-# Uncomment the appropriate module commands for your CCRI TamIA setup.
-# Common options:
-# module load cuda/12.1
-# module load pytorch/2.1
-# module load anaconda3
-# module load python/3.10
-
-# If using a conda environment:
-# conda activate sa_gpu
+module load python/3.11.5 cuda/12.6
 
 # --- Navigate to repo directory ---
-# Adjust this path to where the repo is cloned on TamIA
 cd "$SLURM_SUBMIT_DIR" || cd ~/links/projects/aip-rnishat/shared/AI-in-3D-Printing
 
 echo "Working directory: $(pwd)"
+echo ""
+
+# --- Activate virtual environment ---
+if [ ! -d "sa_gpu_env" ]; then
+    echo "ERROR: Virtual environment not found. Run setup_env.sh first on the login node."
+    exit 1
+fi
+source sa_gpu_env/bin/activate
+
+echo "Python: $(which python3)"
+echo "Python version: $(python3 --version)"
 echo ""
 
 # --- Check CUDA availability ---
@@ -60,15 +65,12 @@ for i in range(torch.cuda.device_count()):
 "
 
 if [ $? -ne 0 ]; then
-    echo "ERROR: PyTorch/CUDA check failed. Ensure PyTorch with CUDA is installed."
-    echo "Try: pip install torch --index-url https://download.pytorch.org/whl/cu121"
+    echo "ERROR: PyTorch/CUDA check failed."
     exit 1
 fi
 
-# --- Install dependencies if needed ---
-pip install pyyaml rich tqdm numpy matplotlib numba 2>/dev/null
-
 # --- Warm up Numba JIT (compile once, not during each SA run) ---
+echo ""
 echo "Warming up Numba JIT compilation..."
 python3 -c "from numba_ops import fast_validate_path; print('Numba JIT ready')"
 
