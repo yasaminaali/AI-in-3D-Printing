@@ -44,7 +44,7 @@ echo "=============================================="
 
 # --- Navigate to repo directory ---
 # Adjust this path to where the repo is cloned on TamIA
-cd "$SLURM_SUBMIT_DIR" || cd ~/AI-in-3D-Printing
+cd "$SLURM_SUBMIT_DIR" || cd ~/links/projects/aip-rnishat/shared/AI-in-3D-Printing
 
 echo "Working directory: $(pwd)"
 echo ""
