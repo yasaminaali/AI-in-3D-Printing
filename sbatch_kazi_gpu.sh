@@ -61,7 +61,7 @@ print(f'CUDA available: {torch.cuda.is_available()}')
 print(f'CUDA devices: {torch.cuda.device_count()}')
 for i in range(torch.cuda.device_count()):
     p = torch.cuda.get_device_properties(i)
-    print(f'  cuda:{i} - {p.name} ({p.total_mem / 1024**3:.0f} GB)')
+    print(f'  cuda:{i} - {p.name} ({p.total_memory / 1024**3:.0f} GB)')
 "
 
 if [ $? -ne 0 ]; then
