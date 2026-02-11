@@ -13,15 +13,6 @@ assignments:
       voronoi: 800
       left_right: 600
 
-  - grid: [80, 80]
-    patterns: [stripes, islands, voronoi, left_right]
-    ga_config: default
-    genome_len:
-      stripes: 850
-      islands: 800
-      voronoi: 900
-      left_right: 700
-
   - grid: [100, 100]
     patterns: [stripes, islands, voronoi, left_right]
     ga_config: default
