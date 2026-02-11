@@ -185,29 +185,42 @@ def build_zones(
 
 
 # ============================================================
-# GPU Crossings Accelerator
+# Crossings Accelerator (numpy-vectorized, no GPU transfer overhead)
 # ============================================================
 class GAGPUCrossings:
     """
-    Lightweight GPU accelerator for GA — precomputes zone boundary tensors
-    for fast crossings computation via element-wise tensor multiply + sum.
-    Reuses the same pattern as GPUAccelerator from SA_generation_gpu.py.
+    Precomputes zone boundary masks as numpy arrays for fast crossings
+    computation via vectorized element-wise multiply + sum.
+
+    Why numpy instead of GPU tensors:
+      GA calls compute_crossings() after EVERY op in the genome
+      (pop_size=200 × genome_len=750 = 150,000 calls per generation).
+      Each GPU call would create tensors + CPU→GPU transfer (~0.5ms each),
+      totaling ~75s per generation. Numpy on a 60×60 grid takes ~2μs
+      per call → 0.3s per generation. ~250x faster for this access pattern.
+
+    The GPU is still used by the pipeline for parallel task distribution
+    across multiple GPUs — each worker process runs on a separate GPU
+    for isolation. The crossings math itself is CPU-vectorized.
     """
 
     def __init__(self, W: int, H: int, zones: Dict[Point, int], device: torch.device):
         self.device = device
-        # Zone grid as tensor
-        zone_list = [[zones[(x, y)] for x in range(W)] for y in range(H)]
-        zone_tensor = torch.tensor(zone_list, dtype=torch.float32, device=device)
-        # Zone boundary matrices (precomputed once)
-        self.hb = (zone_tensor[:, :-1] != zone_tensor[:, 1:]).float()
-        self.vb = (zone_tensor[:-1, :] != zone_tensor[1:, :]).float()
+        # Zone grid as numpy array
+        zone_grid = np.array(
+            [[zones[(x, y)] for x in range(W)] for y in range(H)],
+            dtype=np.float32,
+        )
+        # Zone boundary masks (precomputed once) — numpy float32
+        self.hb = (zone_grid[:, :-1] != zone_grid[:, 1:]).astype(np.float32)
+        self.vb = (zone_grid[:-1, :] != zone_grid[1:, :]).astype(np.float32)
 
     def compute_crossings(self, h) -> int:
-        """Compute zone crossings using GPU tensor element-wise multiply + sum."""
-        H_t = torch.tensor(np.asarray(h.H, dtype=np.float32), device=self.device)
-        V_t = torch.tensor(np.asarray(h.V, dtype=np.float32), device=self.device)
-        return int((H_t * self.hb).sum().item() + (V_t * self.vb).sum().item())
+        """Compute zone crossings: numpy element-wise multiply + sum (~2μs for 60×60)."""
+        return int(
+            (np.asarray(h.H, dtype=np.float32) * self.hb).sum()
+            + (np.asarray(h.V, dtype=np.float32) * self.vb).sum()
+        )
 
 
 # ============================================================
