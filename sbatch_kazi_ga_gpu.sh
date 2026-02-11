@@ -74,17 +74,21 @@ echo ""
 echo "Warming up Numba JIT compilation..."
 python3 -c "from numba_ops import fast_validate_path; print('Numba JIT ready')"
 
+# --- Backup existing GA output before new run ---
 echo ""
-echo "Backing up existing GA output (60x60 + 100x100) before 80x80 run..."
-if [ -f "output/kazi_ga/Dataset.jsonl" ]; then
-    cp output/kazi_ga/Dataset.jsonl output/kazi_ga/Dataset_60_100.jsonl
-    echo "  Backed up -> output/kazi_ga/Dataset_60_100.jsonl"
+echo "Backing up existing GA output before new run..."
+if [ -f "output/kazi_ga/ga_combined_dataset.jsonl" ]; then
+    cp output/kazi_ga/ga_combined_dataset.jsonl output/kazi_ga/ga_combined_dataset_prev.jsonl
+    echo "  Backed up ga_combined_dataset.jsonl -> ga_combined_dataset_prev.jsonl"
+elif [ -f "output/kazi_ga/Dataset.jsonl" ]; then
+    cp output/kazi_ga/Dataset.jsonl output/kazi_ga/ga_combined_dataset_prev.jsonl
+    echo "  Backed up Dataset.jsonl -> ga_combined_dataset_prev.jsonl"
 fi
-# Reset checkpoint so pipeline runs fresh 80x80 tasks
+# Reset checkpoint so pipeline runs fresh tasks
 rm -f output/kazi_ga/checkpoint_kazi_ga.json
 
 echo ""
-echo "Starting GA pipeline with 4 GPUs (80x80 only)..."
+echo "Starting GA pipeline with 4 GPUs..."
 echo ""
 
 # --- Run the GPU pipeline with kazi_ga config ---
@@ -94,34 +98,47 @@ python3 run_ga_pipeline_gpu.py kazi_ga \
 
 EXIT_CODE=$?
 
-# --- Merge 80x80 GA output with existing 60x60 + 100x100 GA output ---
+# --- Merge new GA output with all previous GA output ---
 if [ $EXIT_CODE -eq 0 ]; then
     echo ""
     echo "Merging GA outputs into combined file..."
     python3 -c "
-import os
+import json, os
+from collections import Counter
+
 combined = 'output/kazi_ga/ga_combined_dataset.jsonl'
-sources = ['output/kazi_ga/Dataset.jsonl']
-# Also include any previous GA output backup
-prev = 'output/kazi_ga/Dataset_60_100.jsonl'
+sources = []
+
+# Previous combined output (60x60 + 80x80 + 100x100)
+prev = 'output/kazi_ga/ga_combined_dataset_prev.jsonl'
 if os.path.exists(prev):
-    sources.insert(0, prev)
+    sources.append(prev)
+
+# New run output
+new = 'output/kazi_ga/Dataset.jsonl'
+if os.path.exists(new):
+    sources.append(new)
 
 total = 0
+grids = Counter()
 with open(combined, 'w', encoding='utf-8') as out:
     for src in sources:
-        if not os.path.exists(src):
-            print(f'  SKIP (not found): {src}')
-            continue
         count = 0
         with open(src, 'r', encoding='utf-8') as f:
             for line in f:
-                if line.strip():
-                    out.write(line)
+                s = line.strip()
+                if s:
+                    out.write(s + '\n')
+                    r = json.loads(s)
+                    grids[(r.get('grid_W'), r.get('grid_H'), r.get('zone_pattern'))] += 1
                     count += 1
         total += count
         print(f'  {src}: {count} records')
+
 print(f'  Combined: {total} records -> {combined}')
+print(f'  Breakdown:')
+for k in sorted(grids.keys(), key=lambda x: (x[0], x[1], str(x[2]))):
+    print(f'    {k[0]}x{k[1]} {k[2]}: {grids[k]}')
 "
 fi
 

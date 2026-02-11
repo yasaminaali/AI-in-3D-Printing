@@ -1,14 +1,17 @@
 machine_id: kazi_ga
 num_workers: 4
 output_dir: output/kazi_ga
-dataset_jsonl: "datasets/80x80_complete.jsonl"
+dataset_jsonl: "datasets/combined_dataset.jsonl"
 
 assignments:
-  - grid: [80, 80]
-    patterns: [stripes, islands, voronoi, left_right]
+  - grid: [30, 30]
+    patterns: [stripes]
+    ga_config: long
+    genome_len:
+      stripes: 350
+
+  - grid: [30, 100]
+    patterns: [left_right]
     ga_config: default
     genome_len:
-      stripes: 850
-      islands: 800
-      voronoi: 900
-      left_right: 700
+      left_right: 400
