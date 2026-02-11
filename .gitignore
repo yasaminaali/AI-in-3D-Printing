@@ -34,7 +34,7 @@ Thumbs.db
 *.log
 *.tmp
 nul
-
+combined_dataset_backup_before_stripes_cleanup.jsonl
 # Results / output
 *.json
 !config/*.yaml
