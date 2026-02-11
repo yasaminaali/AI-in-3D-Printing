@@ -15,3 +15,10 @@ assignments:
     ga_config: default
     genome_len:
       left_right: 400
+
+  - grid: [50, 50]
+    patterns: [left_right, voronoi]
+    ga_config: medium
+    genome_len:
+      left_right: 600
+      voronoi: 800

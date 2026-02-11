@@ -24,6 +24,18 @@ ga_configs:
     min_applied_valid: 1
     max_tries_per_slot: 80
 
+  medium:
+    generations: 100
+    pop_size: 200
+    tourn_k: 3
+    elite_k: 6
+    keep_rate: 0.60
+    cx_rate: 0.90
+    cx_ratio: 0.60
+    eps_crossings: 2
+    min_applied_valid: 1
+    max_tries_per_slot: 80
+
 default_zone_params:
   num_islands: 3
   island_size: 8
