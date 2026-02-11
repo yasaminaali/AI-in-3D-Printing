@@ -32,12 +32,16 @@ import os
 import json
 import time
 import random
+import functools
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import List, Tuple, Optional, Dict, Any
 
 import numpy as np
 import torch
+
+# Force flush on all prints (critical for multiprocessing child processes)
+print = functools.partial(print, flush=True)
 
 from operations import HamiltonianSTL
 from numba_ops import FastHamiltonianSTL
@@ -50,7 +54,7 @@ Point = Tuple[int, int]
 # -----------------------
 GENOME_LEN = 100
 
-DEBUG_SUMMARY_EVERY = 10
+DEBUG_SUMMARY_EVERY = 1
 
 # Acceptance gate (child must not be much worse than best parent)
 EPS_CROSSINGS = 2
@@ -503,10 +507,10 @@ def evaluate_individual(
     for i, op in enumerate(ind.ops, start=1):
         if apply_op(h, op):
             applied += 1
-
-        c = gpu_crossings.compute_crossings(h)
-        if c < best_seen:
-            best_seen = c
+            # Only recompute crossings when edges actually changed
+            c = gpu_crossings.compute_crossings(h)
+            if c < best_seen:
+                best_seen = c
 
     ind.applied = applied
     ind.best_seen = best_seen
@@ -770,15 +774,20 @@ def run_ga_sequences_dataset_init(
     base_cross = gpu_crossings.compute_crossings(base)
     print(f"\n[GA-GPU] grid={W}x{H} zone_pattern={zone_pattern} zones_meta={zones_meta} device={device}")
     print(f"[GA-GPU] base crossings (zigzag init) = {base_cross}")
+    print(f"[GA-GPU] output -> {os.path.abspath(ga_out_dir)}/Dataset.jsonl")
 
     # Evaluate generation 0
     pop: List[Individual] = []
     print(f"[GA-GPU] evaluating generation 0 ... (pop_size={pop_size}, genome_len={genome_len})")
     t_gen0 = time.time()
 
-    for _, (rec, ind) in enumerate(pop_pairs, start=1):
+    for idx, (rec, ind) in enumerate(pop_pairs, start=1):
         evaluate_individual(ind, base_edges, W, H, gpu_crossings, verbose=True, tag="", print_every=50)
         pop.append(ind)
+        if idx % 50 == 0 or idx == len(pop_pairs):
+            elapsed = time.time() - t_gen0
+            best_so_far = min(p.best_seen for p in pop)
+            print(f"  gen0: {idx}/{len(pop_pairs)} evaluated ({elapsed:.1f}s) best_seen={best_so_far}")
 
     print(f"[GA-GPU] generation 0 done in {time.time() - t_gen0:.2f}s")
 
