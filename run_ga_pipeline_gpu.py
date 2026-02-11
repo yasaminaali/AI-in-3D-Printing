@@ -15,6 +15,7 @@ Designed for SLURM environments (CCRI TamIA with 4x H100 SXM 80GB).
 """
 
 import argparse
+import json
 import os
 import sys
 import time
@@ -247,6 +248,72 @@ def result_collector(
 
 
 # ============================================================
+# Dataset pre-filtering (load once, write small per-task files)
+# ============================================================
+def prefilter_dataset(task_dicts, output_dir):
+    """
+    Load the full SA dataset JSONL once in the main process, then write
+    small filtered files per (grid, pattern) combination. Updates each
+    task_dict's dataset_jsonl to point to the filtered file.
+
+    This avoids 4 workers each independently parsing ~934MB of JSON.
+    """
+    if not task_dicts:
+        return task_dicts
+
+    # All tasks share the same source dataset
+    source_jsonl = task_dicts[0]["dataset_jsonl"]
+    if not os.path.exists(source_jsonl):
+        print(f"WARNING: Dataset file not found: {source_jsonl}")
+        return task_dicts
+
+    print(f"\nPre-filtering dataset: {source_jsonl}")
+    t0 = time.time()
+
+    # Load all records once
+    records = []
+    with open(source_jsonl, "r", encoding="utf-8") as f:
+        for line in f:
+            s = line.strip()
+            if s:
+                records.append(json.loads(s))
+
+    print(f"  Loaded {len(records)} records in {time.time() - t0:.1f}s")
+
+    # Group by (grid_W, grid_H, zone_pattern)
+    filtered_dir = os.path.join(output_dir, "filtered_datasets")
+    os.makedirs(filtered_dir, exist_ok=True)
+
+    written_paths = {}  # (W, H, pattern) -> filtered file path
+
+    for td in task_dicts:
+        key = (td["width"], td["height"], td["zone_mode"].lower())
+        if key in written_paths:
+            td["dataset_jsonl"] = written_paths[key]
+            continue
+
+        # Filter matching records
+        matched = [
+            r for r in records
+            if (int(r.get("grid_W", 0)) == key[0]
+                and int(r.get("grid_H", 0)) == key[1]
+                and str(r.get("zone_pattern", "")).lower() == key[2])
+        ]
+
+        path = os.path.join(filtered_dir, f"{key[0]}x{key[1]}_{key[2]}.jsonl")
+        with open(path, "w", encoding="utf-8") as f:
+            for r in matched:
+                f.write(json.dumps(r) + "\n")
+
+        written_paths[key] = path
+        td["dataset_jsonl"] = path
+        print(f"  {key[0]}x{key[1]} {key[2]}: {len(matched)} records -> {path}")
+
+    print(f"  Pre-filtering done in {time.time() - t0:.1f}s\n")
+    return task_dicts
+
+
+# ============================================================
 # Main pipeline
 # ============================================================
 def run_ga_gpu_pipeline(
@@ -319,6 +386,10 @@ def run_ga_gpu_pipeline(
 
     # Convert tasks to dicts
     task_dicts = [t.to_dict() for t in pending_tasks]
+
+    # Pre-filter dataset: load the large JSONL once in the main process,
+    # write small per-(grid,pattern) files so workers don't each parse 934MB.
+    task_dicts = prefilter_dataset(task_dicts, machine_cfg.output_dir)
 
     # Create queues
     task_queue = mp.Queue()
