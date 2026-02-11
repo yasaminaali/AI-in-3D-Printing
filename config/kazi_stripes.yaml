@@ -1,0 +1,42 @@
+# Kazi Stripes-Only Configuration
+# 100x100 stripes with opposite zigzags for harder SA starting point
+#
+# Vertical stripes   -> horizontal zigzag  (crosses every row = ~200 init crossings)
+# Horizontal stripes -> vertical zigzag    (crosses every column = ~200 init crossings)
+
+machine_id: kazi_stripes
+num_workers: 50
+output_dir: output/kazi_stripes
+
+assignments:
+  # 100x100 vertical stripes - start with horizontal zigzag (opposite)
+  - grid: [100, 100]
+    patterns:
+      - stripes
+    sa_configs:
+      - short
+      - medium
+      - long
+      - extra_long
+    seeds:
+      stripes: 50
+    zone_params:
+      stripe_direction: "v"
+      stripe_k: 3
+      init_pattern: "zigzag"
+
+  # 100x100 horizontal stripes - start with vertical zigzag (opposite)
+  - grid: [100, 100]
+    patterns:
+      - stripes
+    sa_configs:
+      - short
+      - medium
+      - long
+      - extra_long
+    seeds:
+      stripes: 50
+    zone_params:
+      stripe_direction: "h"
+      stripe_k: 3
+      init_pattern: "vertical_zigzag"

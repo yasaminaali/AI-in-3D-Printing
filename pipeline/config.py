@@ -37,6 +37,8 @@ class ZoneParams:
     stripe_k: int = 3
     # voronoi
     voronoi_k: int = 3
+    # initial path pattern (zigzag, vertical_zigzag, or auto)
+    init_pattern: str = "auto"
 
 
 @dataclass
@@ -65,6 +67,7 @@ class Task:
                 "stripe_direction": self.zone_params.stripe_direction,
                 "stripe_k": self.zone_params.stripe_k,
                 "voronoi_k": self.zone_params.voronoi_k,
+                "init_pattern": self.zone_params.init_pattern,
             },
             "sa_config": {
                 "iterations": self.sa_config.iterations,
@@ -144,6 +147,7 @@ def parse_zone_params(data: Optional[Dict[str, Any]]) -> ZoneParams:
         stripe_direction=data.get("stripe_direction", "v"),
         stripe_k=data.get("stripe_k", 3),
         voronoi_k=data.get("voronoi_k", 3),
+        init_pattern=data.get("init_pattern", "auto"),
     )
 
 

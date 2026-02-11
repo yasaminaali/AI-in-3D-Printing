@@ -1,0 +1,21 @@
+ga_configs:
+  # genome_len varies per grid+pattern, specified in machine config
+  default:
+    generations: 50
+    pop_size: 200
+    tourn_k: 3
+    elite_k: 6
+    keep_rate: 0.60
+    cx_rate: 0.90
+    cx_ratio: 0.60
+    eps_crossings: 2
+    min_applied_valid: 1
+    max_tries_per_slot: 80
+
+default_zone_params:
+  num_islands: 3
+  island_size: 8
+  allow_touch: false
+  stripe_direction: "v"
+  stripe_k: 3
+  voronoi_k: 3

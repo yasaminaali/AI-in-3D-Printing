@@ -1,25 +1,40 @@
 """
-Precompute Fusion training data from combined_dataset.jsonl.
+Precompute Fusion training data v2 from combined_dataset.jsonl.
 
-Replays ALL operations in each trajectory (preserving setup context),
-but only SAVES state snapshots before effective operations (those that
-reduce crossings). Maintains a rolling history buffer (K=8) of recent
-effective ops per trajectory.
+Key fixes from v1:
+- Change 16: Infer correct init_pattern from zone_pattern (was hardcoded 'zigzag')
+- Change 16: Use safe transpose_subgrid/flip_subgrid with status checking
+- Change 1:  MAX_GRID_SIZE=128
+- Change 7:  Save initial_crossings per sample for proper normalization
+- Change 15: Position balancing (oversample inner layers)
+- Change 17: Compact grouped storage by grid size (float16, ~1.7GB)
+- Change 5:  4-channel state (zones, H, V, boundary_combined) — derived channels on-the-fly
 
-Output: fusion_data.pt with:
-  states [N, 4, 32, 32]
-  targets [N, 3]            (position_y, position_x, action_class)
-  traj_ids [N]
-  history_actions [N, K]
-  history_positions_y [N, K]
-  history_positions_x [N, K]
-  history_crossings_before [N, K]
-  history_crossings_after [N, K]
-  history_lengths [N]
+Output: fusion_data.pt with grouped storage:
+  {
+    'grid_groups': {
+      '30x30': {
+        'states': [N, 4, 30, 30] float16,
+        'targets': [N, 3] int16,
+        'traj_ids': [N] int32,
+        'initial_crossings': [N] int16,
+        'history_actions': [N, K] int8,
+        'history_positions_y': [N, K] int8,
+        'history_positions_x': [N, K] int8,
+        'history_crossings_before': [N, K] float16,
+        'history_crossings_after': [N, K] float16,
+        'history_lengths': [N] int8,
+        'grid_w': 30, 'grid_h': 30,
+      },
+      ...
+    },
+    'n_trajectories': int,
+    'max_history': int,
+  }
 
 Usage:
-    PYTHONPATH=$(pwd):$PYTHONPATH python model/fusion/build_fusion_data.py
-    PYTHONPATH=$(pwd):$PYTHONPATH python model/fusion/build_fusion_data.py --input combined_dataset.jsonl
+    PYTHONPATH=$(pwd):$PYTHONPATH python FusionModel/fusion/build_fusion_data.py
+    PYTHONPATH=$(pwd):$PYTHONPATH python FusionModel/fusion/build_fusion_data.py --input combined_dataset.jsonl
 """
 
 import json
@@ -29,7 +44,7 @@ import numpy as np
 import torch
 from pathlib import Path
 from multiprocessing import Pool, cpu_count
-from collections import deque
+from collections import deque, defaultdict, Counter
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
@@ -41,8 +56,8 @@ from rich.progress import (
 
 console = Console()
 
-MAX_GRID_SIZE = 32
-MAX_HISTORY = 8
+MAX_GRID_SIZE = 128
+MAX_HISTORY = 32
 
 VARIANT_MAP = {
     'nl': 0, 'nr': 1, 'sl': 2, 'sr': 3, 'eb': 4, 'ea': 5, 'wa': 6, 'wb': 7,
@@ -50,33 +65,58 @@ VARIANT_MAP = {
 }
 
 
-def _compute_boundary_mask(zones):
-    h, w = zones.shape
-    mask = torch.zeros(MAX_GRID_SIZE, MAX_GRID_SIZE)
+# ---------------------------------------------------------------------------
+# Change 16: Infer correct init_pattern from zone_pattern
+# ---------------------------------------------------------------------------
+
+def _infer_init_pattern(zone_pattern, zone_grid, grid_w, grid_h):
+    """Infer the init_pattern that SA would have used for this trajectory."""
+    if zone_pattern in ('left_right', 'leftright', 'lr'):
+        return 'vertical_zigzag'
+    elif zone_pattern == 'stripes':
+        # Detect stripe direction from zone_grid
+        zones = np.array(zone_grid).reshape(grid_h, grid_w)
+        col0 = zones[:, 0]
+        if len(set(col0.tolist())) == 1:
+            # Column 0 is all same zone -> vertical stripes -> vertical_zigzag
+            return 'vertical_zigzag'
+        return 'zigzag'  # horizontal stripes
+    else:
+        return 'zigzag'  # voronoi, islands, etc.
+
+
+def _compute_boundary_mask(zones, grid_w, grid_h):
+    """Compute zone boundary mask at natural resolution."""
+    mask = torch.zeros(grid_h, grid_w)
     zt = torch.from_numpy(zones.astype(np.float32))
-    if w > 1:
+    if grid_w > 1:
         diff_h = (zt[:, :-1] != zt[:, 1:]).float()
-        mask[:h, :w - 1] = torch.maximum(mask[:h, :w - 1], diff_h)
-        mask[:h, 1:w] = torch.maximum(mask[:h, 1:w], diff_h)
-    if h > 1:
+        mask[:, :grid_w - 1] = torch.maximum(mask[:, :grid_w - 1], diff_h)
+        mask[:, 1:grid_w] = torch.maximum(mask[:, 1:grid_w], diff_h)
+    if grid_h > 1:
         diff_v = (zt[:-1, :] != zt[1:, :]).float()
-        mask[:h - 1, :w] = torch.maximum(mask[:h - 1, :w], diff_v)
-        mask[1:h, :w] = torch.maximum(mask[1:h, :w], diff_v)
+        mask[:grid_h - 1, :] = torch.maximum(mask[:grid_h - 1, :], diff_v)
+        mask[1:grid_h, :] = torch.maximum(mask[1:grid_h, :], diff_v)
     return mask
 
 
 def _encode_state(zones, boundary_mask, H_edges, V_edges, grid_w, grid_h):
-    state = torch.zeros(4, MAX_GRID_SIZE, MAX_GRID_SIZE)
+    """Encode state as 4 channels at natural grid resolution (no padding to 128)."""
+    state = torch.zeros(4, grid_h, grid_w)
     max_zone = max(zones.max(), 1)
     state[0, :grid_h, :grid_w] = torch.from_numpy(zones.astype(np.float32)) / max_zone
+
     H_arr = np.array(H_edges, dtype=np.float32)
     state[1, :grid_h, :grid_w - 1] = torch.from_numpy(H_arr[:grid_h, :grid_w - 1])
+
     V_arr = np.array(V_edges, dtype=np.float32)
     state[2, :grid_h - 1, :grid_w] = torch.from_numpy(V_arr[:grid_h - 1, :grid_w])
-    state[3] = boundary_mask.clone()
+
+    # Channel 3: boundary_combined (0.5 inside grid, 1.0 at boundary)
+    state[3, :grid_h, :grid_w] = 0.5  # inside grid
     state[3, :grid_h, :grid_w] = torch.maximum(
         state[3, :grid_h, :grid_w],
-        torch.ones(grid_h, grid_w) * 0.5
+        boundary_mask[:grid_h, :grid_w]
     )
     return state
 
@@ -90,7 +130,7 @@ def _compute_crossings(H_edges, V_edges, zones, grid_w, grid_h):
 
 
 def process_trajectory(args):
-    """Replay one trajectory, return (traj_idx, states, targets, history_*) or None."""
+    """Replay one trajectory using safe methods. Return samples or None."""
     from operations import HamiltonianSTL
 
     traj_idx, traj_json = args
@@ -99,16 +139,22 @@ def process_trajectory(args):
     grid_w = traj.get('grid_W', 30)
     grid_h = traj.get('grid_H', 30)
     zone_grid = traj['zone_grid']
+    zone_pattern = traj.get('zone_pattern', 'unknown')
     zones = np.array(zone_grid).reshape(grid_h, grid_w)
 
-    boundary_mask = _compute_boundary_mask(zones)
-    h = HamiltonianSTL(grid_w, grid_h, init_pattern='zigzag')
-    prev_crossings = _compute_crossings(h.H, h.V, zones, grid_w, grid_h)
+    boundary_mask = _compute_boundary_mask(zones, grid_w, grid_h)
+
+    # Change 16: Infer correct init_pattern
+    init_pattern = _infer_init_pattern(zone_pattern, zone_grid, grid_w, grid_h)
+    h = HamiltonianSTL(grid_w, grid_h, init_pattern=init_pattern)
+    initial_crossings = _compute_crossings(h.H, h.V, zones, grid_w, grid_h)
+    prev_crossings = initial_crossings
 
     states = []
     targets = []
+    sample_initial_crossings = []
 
-    # History buffer: rolling window of recent effective ops
+    # History buffer
     hist_actions = []
     hist_positions_y = []
     hist_positions_x = []
@@ -116,7 +162,6 @@ def process_trajectory(args):
     hist_crossings_after = []
     hist_lengths = []
 
-    # Current rolling history (deque of recent effective ops)
     history_buffer = deque(maxlen=MAX_HISTORY)
 
     for op in traj['sequence_ops']:
@@ -126,24 +171,27 @@ def process_trajectory(args):
 
         x, y, variant = op['x'], op['y'], op['variant']
 
-        # Snapshot edges BEFORE applying
+        # Snapshot BEFORE
         H_snap = [row[:] for row in h.H]
         V_snap = [row[:] for row in h.V]
 
-        # Apply the operation
+        # Apply using safe methods
         try:
             if kind == 'T':
                 sub = h.get_subgrid((x, y), (x + 2, y + 2))
-                pattern = h.transpose_patterns[variant]
+                sub, status = h.transpose_subgrid(sub, variant)
+                if 'transposed_' not in status:
+                    continue
             elif kind == 'F':
                 if variant in ['n', 's']:
                     sub = h.get_subgrid((x, y), (x + 1, y + 2))
                 else:
                     sub = h.get_subgrid((x, y), (x + 2, y + 1))
-                pattern = h.flip_patterns[variant]
+                sub, status = h.flip_subgrid(sub, variant)
+                if 'flipped_' not in status:
+                    continue
             else:
                 continue
-            h._apply_edge_diff_in_subgrid(sub, pattern['old'], pattern['new'])
         except Exception:
             h.H = H_snap
             h.V = V_snap
@@ -152,16 +200,17 @@ def process_trajectory(args):
         crossings_after = _compute_crossings(h.H, h.V, zones, grid_w, grid_h)
 
         if crossings_after < prev_crossings:
-            # Encode state from BEFORE this effective op
+            # Encode state from BEFORE this effective op (using snapshots)
             state_before = _encode_state(zones, boundary_mask, H_snap, V_snap, grid_w, grid_h)
             states.append(state_before)
             targets.append(torch.tensor([
-                min(y, MAX_GRID_SIZE - 1),
-                min(x, MAX_GRID_SIZE - 1),
+                min(y, grid_h - 1),
+                min(x, grid_w - 1),
                 min(VARIANT_MAP.get(variant, 0), 11),
             ], dtype=torch.long))
+            sample_initial_crossings.append(initial_crossings)
 
-            # Save current history snapshot for this sample
+            # Save current history snapshot
             cur_len = len(history_buffer)
             h_act = torch.zeros(MAX_HISTORY, dtype=torch.long)
             h_py = torch.zeros(MAX_HISTORY, dtype=torch.long)
@@ -183,11 +232,11 @@ def process_trajectory(args):
             hist_crossings_after.append(h_ca)
             hist_lengths.append(cur_len)
 
-            # NOW add this effective op to the history buffer (for future samples)
+            # Add to history buffer for future samples
             history_buffer.append({
                 'action': VARIANT_MAP.get(variant, 0),
-                'py': min(y, MAX_GRID_SIZE - 1),
-                'px': min(x, MAX_GRID_SIZE - 1),
+                'py': min(y, grid_h - 1),
+                'px': min(x, grid_w - 1),
                 'cb': prev_crossings,
                 'ca': crossings_after,
             })
@@ -199,8 +248,11 @@ def process_trajectory(args):
 
     return (
         traj_idx,
+        grid_w,
+        grid_h,
         torch.stack(states),
         torch.stack(targets),
+        torch.tensor(sample_initial_crossings, dtype=torch.long),
         torch.stack(hist_actions),
         torch.stack(hist_positions_y),
         torch.stack(hist_positions_x),
@@ -210,17 +262,26 @@ def process_trajectory(args):
     )
 
 
+def _compute_layer_index(y, x, grid_h, grid_w):
+    """Compute distance from boundary (layer 0 = outermost)."""
+    return min(y, x, grid_h - 1 - y, grid_w - 1 - x)
+
+
 def main():
-    parser = argparse.ArgumentParser(description='Build Fusion training data')
+    parser = argparse.ArgumentParser(description='Build Fusion training data v2')
     parser.add_argument('--input', default='combined_dataset.jsonl')
-    parser.add_argument('--output', default='model/fusion/fusion_data.pt')
+    parser.add_argument('--output', default='FusionModel/fusion/fusion_data.pt')
     parser.add_argument('--workers', type=int, default=0, help='0 = 30%% of cores')
     parser.add_argument('--limit', type=int, default=0, help='Process only first N trajectories (0 = all)')
+    parser.add_argument('--max_oversample', type=int, default=4, help='Max oversampling factor for inner layers')
     args = parser.parse_args()
 
-    console.print(f"[bold cyan]Build Fusion Training Data[/bold cyan]")
+    console.print(f"[bold cyan]Build Fusion Training Data v2[/bold cyan]")
     console.print(f"  Input:  {args.input}")
     console.print(f"  Output: {args.output}")
+    console.print(f"  MAX_GRID_SIZE: {MAX_GRID_SIZE}")
+    console.print(f"  MAX_HISTORY: {MAX_HISTORY}")
+    console.print(f"  Compact grouped storage: float16 by grid size")
 
     with open(args.input) as f:
         lines = f.readlines()
@@ -230,21 +291,21 @@ def main():
 
     n_workers = args.workers if args.workers > 0 else max(1, int(cpu_count() * 0.3))
     console.print(f"  Workers: {n_workers}")
-    console.print(f"  History length: {MAX_HISTORY}")
 
     task_args = [(i, line) for i, line in enumerate(lines)]
 
-    all_states = []
-    all_targets = []
-    all_traj_ids = []
-    all_hist_actions = []
-    all_hist_py = []
-    all_hist_px = []
-    all_hist_cb = []
-    all_hist_ca = []
-    all_hist_lengths = []
+    # Collect results grouped by grid size
+    grid_groups = defaultdict(lambda: {
+        'states': [], 'targets': [], 'traj_ids': [],
+        'initial_crossings': [],
+        'hist_actions': [], 'hist_py': [], 'hist_px': [],
+        'hist_cb': [], 'hist_ca': [], 'hist_lengths': [],
+    })
+
     n_trajs = 0
     total_effective = 0
+    pattern_counts = Counter()
+    init_pattern_counts = Counter()
 
     with Progress(
         SpinnerColumn(),
@@ -263,57 +324,144 @@ def main():
         with Pool(n_workers) as pool:
             for result in pool.imap_unordered(process_trajectory, task_args, chunksize=2):
                 if result is not None:
-                    (traj_idx, states, targets,
+                    (traj_idx, gw, gh, states, targets, init_cross,
                      h_act, h_py, h_px, h_cb, h_ca, h_len) = result
 
                     n_samples = len(states)
-                    all_states.append(states)
-                    all_targets.append(targets)
-                    all_traj_ids.extend([n_trajs] * n_samples)
-                    all_hist_actions.append(h_act)
-                    all_hist_py.append(h_py)
-                    all_hist_px.append(h_px)
-                    all_hist_cb.append(h_cb)
-                    all_hist_ca.append(h_ca)
-                    all_hist_lengths.append(h_len)
+                    key = f"{gw}x{gh}"
+                    group = grid_groups[key]
+                    group['states'].append(states)
+                    group['targets'].append(targets)
+                    group['traj_ids'].extend([n_trajs] * n_samples)
+                    group['initial_crossings'].append(init_cross)
+                    group['hist_actions'].append(h_act)
+                    group['hist_py'].append(h_py)
+                    group['hist_px'].append(h_px)
+                    group['hist_cb'].append(h_cb)
+                    group['hist_ca'].append(h_ca)
+                    group['hist_lengths'].append(h_len)
+                    group['grid_w'] = gw
+                    group['grid_h'] = gh
+
                     n_trajs += 1
                     total_effective += n_samples
+                    pattern_counts[key] += n_samples
 
                 progress.update(ptask, advance=1,
-                                status=f"{n_trajs} trajectories, {total_effective} effective ops")
+                                status=f"{n_trajs} trajs, {total_effective} ops")
 
-    console.print(f"\n[bold]Concatenating tensors...[/bold]")
-    states_tensor = torch.cat(all_states, dim=0)
-    targets_tensor = torch.cat(all_targets, dim=0)
-    traj_ids_tensor = torch.tensor(all_traj_ids, dtype=torch.long)
-    hist_actions_tensor = torch.cat(all_hist_actions, dim=0)
-    hist_py_tensor = torch.cat(all_hist_py, dim=0)
-    hist_px_tensor = torch.cat(all_hist_px, dim=0)
-    hist_cb_tensor = torch.cat(all_hist_cb, dim=0)
-    hist_ca_tensor = torch.cat(all_hist_ca, dim=0)
-    hist_lengths_tensor = torch.cat(all_hist_lengths, dim=0)
+    console.print(f"\n[bold]Grid size distribution:[/bold]")
+    for key, count in sorted(pattern_counts.items()):
+        console.print(f"  {key}: {count} samples")
 
-    console.print(f"  Total samples: [green]{states_tensor.size(0)}[/green]")
+    # --- Change 15: Position balancing (oversample inner layers) ---
+    console.print(f"\n[bold]Applying position balancing (Change 15)...[/bold]")
+
+    for key, group in grid_groups.items():
+        if not group['states']:
+            continue
+
+        all_targets = torch.cat(group['targets'], dim=0)
+        gw = group['grid_w']
+        gh = group['grid_h']
+
+        # Compute layer index for each sample
+        layers = []
+        for i in range(len(all_targets)):
+            ty, tx = all_targets[i, 0].item(), all_targets[i, 1].item()
+            layer = _compute_layer_index(ty, tx, gh, gw)
+            layers.append(layer)
+        layers = np.array(layers)
+
+        layer_counts = Counter(layers.tolist())
+        if len(layer_counts) <= 1:
+            continue
+
+        max_count = max(layer_counts.values())
+        # Compute oversampling indices
+        oversample_indices = list(range(len(all_targets)))  # start with all
+
+        for layer_val, count in layer_counts.items():
+            if count < max_count:
+                ratio = min(args.max_oversample, max_count / max(count, 1))
+                n_extra = int(count * (ratio - 1))
+                layer_indices = np.where(layers == layer_val)[0]
+                if len(layer_indices) > 0 and n_extra > 0:
+                    extra = np.random.choice(layer_indices, size=n_extra, replace=True)
+                    oversample_indices.extend(extra.tolist())
+
+        n_before = len(all_targets)
+        n_after = len(oversample_indices)
+        if n_after > n_before:
+            console.print(f"  {key}: {n_before} -> {n_after} samples "
+                          f"(+{n_after - n_before} from oversampling inner layers)")
+
+        # Apply oversampling to all tensors
+        idx_tensor = torch.tensor(oversample_indices, dtype=torch.long)
+        group['_oversample_idx'] = idx_tensor
+
+    # --- Concatenate and save with compact grouped storage ---
+    console.print(f"\n[bold]Building compact grouped storage...[/bold]")
+
+    save_groups = {}
+    total_samples_final = 0
+
+    for key, group in grid_groups.items():
+        if not group['states']:
+            continue
+
+        states_cat = torch.cat(group['states'], dim=0)
+        targets_cat = torch.cat(group['targets'], dim=0)
+        traj_ids_cat = torch.tensor(group['traj_ids'], dtype=torch.int32)
+        init_cross_cat = torch.cat(group['initial_crossings'], dim=0)
+        h_act_cat = torch.cat(group['hist_actions'], dim=0)
+        h_py_cat = torch.cat(group['hist_py'], dim=0)
+        h_px_cat = torch.cat(group['hist_px'], dim=0)
+        h_cb_cat = torch.cat(group['hist_cb'], dim=0)
+        h_ca_cat = torch.cat(group['hist_ca'], dim=0)
+        h_len_cat = torch.cat(group['hist_lengths'], dim=0)
+
+        # Apply oversampling if computed
+        if '_oversample_idx' in group:
+            idx = group['_oversample_idx']
+            states_cat = states_cat[idx]
+            targets_cat = targets_cat[idx]
+            traj_ids_cat = traj_ids_cat[idx]
+            init_cross_cat = init_cross_cat[idx]
+            h_act_cat = h_act_cat[idx]
+            h_py_cat = h_py_cat[idx]
+            h_px_cat = h_px_cat[idx]
+            h_cb_cat = h_cb_cat[idx]
+            h_ca_cat = h_ca_cat[idx]
+            h_len_cat = h_len_cat[idx]
+
+        n = len(states_cat)
+        total_samples_final += n
+
+        save_groups[key] = {
+            'states': states_cat.half(),  # float16
+            'targets': targets_cat.short(),  # int16
+            'traj_ids': traj_ids_cat,  # int32
+            'initial_crossings': init_cross_cat.short(),  # int16
+            'history_actions': h_act_cat.byte(),  # uint8
+            'history_positions_y': h_py_cat.byte(),
+            'history_positions_x': h_px_cat.byte(),
+            'history_crossings_before': h_cb_cat.half(),
+            'history_crossings_after': h_ca_cat.half(),
+            'history_lengths': h_len_cat.byte(),
+            'grid_w': group['grid_w'],
+            'grid_h': group['grid_h'],
+        }
+
+        console.print(f"  {key}: {n} samples, states shape {states_cat.shape}")
+
+    console.print(f"\n  Total samples (after balancing): [green]{total_samples_final}[/green]")
     console.print(f"  Valid trajectories: [green]{n_trajs}[/green]")
-    console.print(f"  States: {states_tensor.shape}")
-    console.print(f"  Targets: {targets_tensor.shape}")
-    console.print(f"  History actions: {hist_actions_tensor.shape}")
-    console.print(f"  History lengths: min={hist_lengths_tensor.min().item()}, "
-                  f"max={hist_lengths_tensor.max().item()}, "
-                  f"mean={hist_lengths_tensor.float().mean().item():.1f}")
 
     Path(args.output).parent.mkdir(parents=True, exist_ok=True)
     torch.save({
-        'states': states_tensor,
-        'targets': targets_tensor,
-        'traj_ids': traj_ids_tensor,
+        'grid_groups': save_groups,
         'n_trajectories': n_trajs,
-        'history_actions': hist_actions_tensor,
-        'history_positions_y': hist_py_tensor,
-        'history_positions_x': hist_px_tensor,
-        'history_crossings_before': hist_cb_tensor,
-        'history_crossings_after': hist_ca_tensor,
-        'history_lengths': hist_lengths_tensor,
         'max_history': MAX_HISTORY,
     }, args.output)
 

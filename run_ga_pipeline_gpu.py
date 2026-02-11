@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """
-run_pipeline_gpu.py - Multi-GPU SA Dataset Generation Pipeline
+run_ga_pipeline_gpu.py - Multi-GPU GA Dataset Generation Pipeline
 
-Distributes SA tasks from a machine YAML config across multiple NVIDIA GPUs.
-Each GPU runs a worker process that executes SA tasks sequentially using
-GPU-accelerated crossings computation and batched pattern matching.
+Distributes GA tasks from a machine YAML config across multiple NVIDIA GPUs.
+Each GPU runs a worker process that executes GA tasks sequentially using
+GPU-accelerated crossings computation and Numba-compiled path validation.
 
 Usage:
-    python run_pipeline_gpu.py kazi --gpus 4
-    python run_pipeline_gpu.py kazi --gpus 4 --workers-per-gpu 8
-    python run_pipeline_gpu.py kazi --gpus 4 --retry-failed
+    python run_ga_pipeline_gpu.py kazi_ga --gpus 4
+    python run_ga_pipeline_gpu.py kazi_ga --gpus 4 --retry-failed
+    python run_ga_pipeline_gpu.py kazi_ga --gpus 4 --config-dir config
 
 Designed for SLURM environments (CCRI TamIA with 4x H100 SXM 80GB).
 """
@@ -18,13 +18,9 @@ import argparse
 import os
 import sys
 import time
-import json
 import traceback
 import threading
 from datetime import timedelta
-from multiprocessing import Process, Queue, cpu_count
-from typing import Any, Dict, List, Optional
-from dataclasses import dataclass
 
 # Add script directory to path
 _script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -34,37 +30,35 @@ if _script_dir not in sys.path:
 import torch
 import torch.multiprocessing as mp
 
-
 # ============================================================
-# Config loading (reuse pipeline config module)
+# Config loading (GA pipeline config module)
 # ============================================================
-from pipeline.config import (
-    GlobalConfig, MachineConfig, Task, SAConfig, ZoneParams,
-    load_config, parse_zone_params,
+from pipeline.ga_config import (
+    GAGlobalConfig, GAMachineConfig, GATask, GAConfig,
+    load_ga_config,
 )
-from pipeline.task_generator import generate_tasks, filter_pending_tasks
+from pipeline.ga_task_generator import generate_ga_tasks, filter_pending_ga_tasks
 from pipeline.checkpoint import Checkpoint, TaskResult
 
 
 # ============================================================
 # GPU Worker
 # ============================================================
-def gpu_worker(
+def ga_gpu_worker(
     gpu_id: int,
     device_id: int,
     task_queue: mp.Queue,
     result_queue: mp.Queue,
-    workers_per_gpu: int,
 ):
     """
-    Worker process for a single GPU. Pulls tasks from queue, runs SA with GPU acceleration.
+    Worker process for a single GPU. Pulls GA tasks from queue,
+    runs GA with GPU-accelerated crossings.
 
     Args:
         gpu_id: Logical GPU index (0-3)
         device_id: CUDA device index
         task_queue: Queue of task dicts to process
         result_queue: Queue for completed results
-        workers_per_gpu: Number of CPU sub-workers per GPU for parallel SA runs
     """
     import torch
     device = torch.device(f"cuda:{device_id}")
@@ -79,7 +73,7 @@ def gpu_worker(
         print(f"[GPU {gpu_id}] ERROR: Cannot access cuda:{device_id}: {e}", flush=True)
         return
 
-    from SA_generation_gpu import run_sa
+    from ga_sequence_gpu import run_ga_sequences_dataset_init
 
     completed = 0
     while True:
@@ -95,50 +89,55 @@ def gpu_worker(
             break
 
         task_id = task_dict["task_id"]
-        sa_cfg = task_dict["sa_config"]
+        ga_cfg = task_dict["ga_config"]
         zp = task_dict["zone_params"]
         start = time.time()
 
+        print(f"[GPU {gpu_id}] Starting task: {task_id}", flush=True)
+
         try:
-            initial_crossings, final_crossings, best_ops = run_sa(
-                width=task_dict["width"],
-                height=task_dict["height"],
-                iterations=sa_cfg["iterations"],
-                Tmax=sa_cfg["Tmax"],
-                Tmin=sa_cfg["Tmin"],
-                seed=task_dict["seed"],
-                plot_live=False,
-                show_every_accepted=0,
-                pause_seconds=0.0,
-                dataset_dir=task_dict["output_dir"],
-                write_dataset=True,
-                max_move_tries=sa_cfg.get("max_move_tries", 200),
-                pool_refresh_period=sa_cfg.get("pool_refresh_period", 250),
-                pool_max_moves=sa_cfg.get("pool_max_moves", 5000),
-                reheat_patience=sa_cfg.get("reheat_patience", 1500),
-                reheat_factor=sa_cfg.get("reheat_factor", 1.5),
-                reheat_cap=sa_cfg.get("reheat_cap", 600.0),
-                transpose_phase_ratio=sa_cfg.get("transpose_phase_ratio", 0.6),
-                border_to_inner=sa_cfg.get("border_to_inner", True),
-                zone_mode=task_dict["zone_mode"],
+            best_ind = run_ga_sequences_dataset_init(
+                dataset_jsonl=task_dict["dataset_jsonl"],
+                W=task_dict["width"],
+                H=task_dict["height"],
+                zone_pattern=task_dict["zone_mode"],
+                pop_size=ga_cfg["pop_size"],
+                generations=ga_cfg["generations"],
+                tourn_k=ga_cfg["tourn_k"],
+                genome_len=ga_cfg["genome_len"],
+                # zone params
                 num_islands=zp.get("num_islands", 3),
                 island_size=zp.get("island_size", 8),
                 allow_touch=zp.get("allow_touch", False),
                 stripe_direction=zp.get("stripe_direction", "v"),
                 stripe_k=zp.get("stripe_k", 3),
                 voronoi_k=zp.get("voronoi_k", 3),
-                init_pattern=zp.get("init_pattern", "auto"),
-                debug=False,
+                # dataset selection
+                dataset_choose="best",
+                dataset_sample_seed=0,
+                # output
+                ga_out_dir=task_dict["output_dir"],
+                # GPU
                 device=device,
+                # GA hyperparameters
+                elite_k=ga_cfg.get("elite_k", 6),
+                keep_rate=ga_cfg.get("keep_rate", 0.60),
+                cx_rate=ga_cfg.get("cx_rate", 0.90),
+                cx_ratio=ga_cfg.get("cx_ratio", 0.60),
+                eps_crossings=ga_cfg.get("eps_crossings", 2),
+                min_applied_valid=ga_cfg.get("min_applied_valid", 1),
+                max_tries_per_slot=ga_cfg.get("max_tries_per_slot", 80),
             )
 
             runtime = time.time() - start
             completed += 1
 
+            final_crossings = int(best_ind.best_seen) if best_ind else None
+
             result_queue.put({
                 "task_id": task_id,
                 "success": True,
-                "initial_crossings": initial_crossings,
+                "initial_crossings": None,
                 "final_crossings": final_crossings,
                 "runtime_sec": runtime,
                 "error": None,
@@ -146,10 +145,12 @@ def gpu_worker(
                 "gpu_id": gpu_id,
             })
 
-            if completed % 10 == 0:
-                print(f"[GPU {gpu_id}] Completed {completed} tasks "
-                      f"(last: {initial_crossings}->{final_crossings} in {runtime:.1f}s)",
-                      flush=True)
+            print(
+                f"[GPU {gpu_id}] Completed task {task_id}: "
+                f"best_crossings={final_crossings} in {runtime:.1f}s "
+                f"({completed} tasks done)",
+                flush=True,
+            )
 
         except Exception as e:
             runtime = time.time() - start
@@ -164,6 +165,7 @@ def gpu_worker(
                 "timestamp": time.time(),
                 "gpu_id": gpu_id,
             })
+            print(f"[GPU {gpu_id}] FAILED task {task_id}: {e}", flush=True)
 
     print(f"[GPU {gpu_id}] Worker finished. Completed {completed} tasks total.", flush=True)
 
@@ -211,15 +213,14 @@ def result_collector(
         remaining = total_tasks - processed
         eta = remaining / rate if rate > 0 else 0
 
-        if processed % 25 == 0 or processed == total_tasks:
-            print(
-                f"\r[Progress] {processed}/{total_tasks} "
-                f"({completed} OK, {failed} fail) "
-                f"| {rate:.2f} tasks/s "
-                f"| ETA: {timedelta(seconds=int(eta))} "
-                f"| Elapsed: {timedelta(seconds=int(elapsed))}",
-                flush=True,
-            )
+        print(
+            f"\r[Progress] {processed}/{total_tasks} "
+            f"({completed} OK, {failed} fail) "
+            f"| {rate:.2f} tasks/s "
+            f"| ETA: {timedelta(seconds=int(eta))} "
+            f"| Elapsed: {timedelta(seconds=int(elapsed))}",
+            flush=True,
+        )
 
         if processed >= total_tasks:
             break
@@ -248,25 +249,23 @@ def result_collector(
 # ============================================================
 # Main pipeline
 # ============================================================
-def run_gpu_pipeline(
+def run_ga_gpu_pipeline(
     config_dir: str,
     machine_id: str,
     num_gpus: int = 4,
-    workers_per_gpu: int = 1,
     retry_failed: bool = False,
 ):
     """
-    Run the SA dataset generation pipeline across multiple GPUs.
+    Run the GA dataset generation pipeline across multiple GPUs.
 
     Args:
         config_dir: Path to config directory with YAML files
-        machine_id: Machine identifier (e.g., 'kazi')
+        machine_id: Machine identifier (e.g., 'kazi_ga')
         num_gpus: Number of GPUs to use
-        workers_per_gpu: CPU workers per GPU (for future use)
         retry_failed: Whether to retry previously failed tasks
     """
     print("=" * 70)
-    print(f"  SA Dataset Generation Pipeline - GPU Accelerated")
+    print(f"  GA Dataset Generation Pipeline - GPU Accelerated")
     print(f"  Machine: {machine_id}")
     print(f"  GPUs: {num_gpus}")
     print("=" * 70)
@@ -288,8 +287,12 @@ def run_gpu_pipeline(
         num_gpus = available_gpus
 
     # Load config
-    global_cfg, machine_cfg = load_config(config_dir, machine_id)
-    all_tasks = generate_tasks(global_cfg, machine_cfg)
+    global_cfg, machine_cfg = load_ga_config(config_dir, machine_id)
+    all_tasks = generate_ga_tasks(global_cfg, machine_cfg)
+
+    print(f"\nGA Tasks generated: {len(all_tasks)}")
+    for t in all_tasks:
+        print(f"  {t.task_id}: {t.width}x{t.height} {t.zone_mode} genome_len={t.ga_config.genome_len}")
 
     # Setup checkpoint
     os.makedirs(machine_cfg.output_dir, exist_ok=True)
@@ -302,7 +305,7 @@ def run_gpu_pipeline(
 
     # Filter pending tasks
     completed_ids = checkpoint.get_completed_ids()
-    pending_tasks = filter_pending_tasks(all_tasks, completed_ids)
+    pending_tasks = filter_pending_ga_tasks(all_tasks, completed_ids)
 
     total_all = len(all_tasks)
     total_pending = len(pending_tasks)
@@ -321,7 +324,7 @@ def run_gpu_pipeline(
     task_queue = mp.Queue()
     result_queue = mp.Queue()
 
-    # Fill task queue, distributing evenly
+    # Fill task queue
     for td in task_dicts:
         task_queue.put(td)
 
@@ -345,8 +348,8 @@ def run_gpu_pipeline(
     processes = []
     for gpu_id in range(num_gpus):
         p = mp.Process(
-            target=gpu_worker,
-            args=(gpu_id, gpu_id, task_queue, result_queue, workers_per_gpu),
+            target=ga_gpu_worker,
+            args=(gpu_id, gpu_id, task_queue, result_queue),
         )
         p.start()
         processes.append(p)
@@ -371,7 +374,7 @@ def run_gpu_pipeline(
     stats = checkpoint.get_stats()
 
     print("\n" + "=" * 70)
-    print(f"  Pipeline Complete!")
+    print(f"  GA Pipeline Complete!")
     print(f"  Elapsed: {timedelta(seconds=int(elapsed))}")
     print(f"  Completed: {stats['completed_count']}/{total_all}")
     print(f"  Failed: {stats['failed_count']}")
@@ -389,12 +392,10 @@ def main():
     mp.set_start_method('spawn', force=True)
 
     parser = argparse.ArgumentParser(
-        description="GPU-accelerated SA dataset generation pipeline",
+        description="GPU-accelerated GA dataset generation pipeline",
     )
-    parser.add_argument("machine_id", type=str, help="Machine ID (e.g., kazi)")
+    parser.add_argument("machine_id", type=str, help="Machine ID (e.g., kazi_ga)")
     parser.add_argument("--gpus", type=int, default=4, help="Number of GPUs (default: 4)")
-    parser.add_argument("--workers-per-gpu", type=int, default=1,
-                        help="CPU workers per GPU (default: 1)")
     parser.add_argument("--config-dir", type=str, default="config",
                         help="Config directory (default: config)")
     parser.add_argument("--retry-failed", action="store_true",
@@ -406,11 +407,10 @@ def main():
         print(f"Error: Config directory not found: {config_dir}")
         sys.exit(1)
 
-    run_gpu_pipeline(
+    run_ga_gpu_pipeline(
         config_dir=config_dir,
         machine_id=args.machine_id,
         num_gpus=args.gpus,
-        workers_per_gpu=args.workers_per_gpu,
         retry_failed=args.retry_failed,
     )
 

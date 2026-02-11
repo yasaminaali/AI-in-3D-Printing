@@ -1,21 +1,18 @@
 """
-FusionNet (CNN+RNN+FiLM) Inference for Hamiltonian Path Optimization.
+FusionNet v2 (CNN+RNN+FiLM) Inference for Hamiltonian Path Optimization.
 
-Iterative inference with history context:
-1. Encode current grid state as 5-channel tensor
-2. Build history tensors from recent effective operations
-3. Forward pass -> position scores + action logits
-4. Select best valid (position, action) from boundary candidates
-5. Update history buffer with effective operation
-6. Repeat until no improvement
-
-Tests all 4 zone patterns (left_right, voronoi, islands, stripes) with
-per-pattern breakdown. Shows grid size, zone pattern, and zone count per sample.
+Key changes from v1:
+- Change 1:  MAX_GRID_SIZE=128
+- Change 8:  Per-hypothesis candidate selection (not mean-softmax)
+- Change 9:  Adaptive give-up threshold
+- Change 10: History seeding with greedy operations
+- Change 11: Stochastic exploration (sample with prob 0.15)
+- Change 5:  9-channel state encoding
+- Change 7:  Crossing normalization by initial_crossings
+- Change 16: Correct init_pattern from zone_pattern
 
 Usage:
-    PYTHONPATH=$(pwd):$PYTHONPATH python model/fusion/inference_fusion.py --checkpoint nn_checkpoints/fusion/best.pt
-    PYTHONPATH=$(pwd):$PYTHONPATH python model/fusion/inference_fusion.py --checkpoint nn_checkpoints/fusion/best.pt --visualize
-    PYTHONPATH=$(pwd):$PYTHONPATH python model/fusion/inference_fusion.py --checkpoint nn_checkpoints/fusion/best.pt --n_per_pattern 25
+    PYTHONPATH=$(pwd):$PYTHONPATH python FusionModel/fusion/inference_fusion.py --checkpoint nn_checkpoints/fusion/best.pt
 """
 
 import torch
@@ -49,24 +46,39 @@ from rich import box
 
 console = Console()
 
-MAX_GRID_SIZE = 32
-MAX_HISTORY = 8
+MAX_GRID_SIZE = 128
+MAX_HISTORY = 32
 TRANSPOSE_VARIANTS = {'nl', 'nr', 'sl', 'sr', 'eb', 'ea', 'wa', 'wb'}
 FLIP_VARIANTS = {'n', 's', 'e', 'w'}
 ALL_PATTERNS = ['left_right', 'voronoi', 'islands', 'stripes']
 
 
 # ---------------------------------------------------------------------------
-# Grid helpers (vectorized)
+# Change 16: Infer correct init_pattern
+# ---------------------------------------------------------------------------
+
+def _infer_init_pattern(zone_pattern, zones_np, grid_w, grid_h):
+    """Infer the init_pattern that SA would have used."""
+    if zone_pattern in ('left_right', 'leftright', 'lr'):
+        return 'vertical_zigzag'
+    elif zone_pattern == 'stripes':
+        col0 = zones_np[:, 0]
+        if len(set(col0.tolist())) == 1:
+            return 'vertical_zigzag'
+        return 'zigzag'
+    else:
+        return 'zigzag'
+
+
+# ---------------------------------------------------------------------------
+# Grid helpers
 # ---------------------------------------------------------------------------
 
 def _h_edges_np(h: HamiltonianSTL) -> np.ndarray:
     return np.array(h.H, dtype=np.float32)
 
-
 def _v_edges_np(h: HamiltonianSTL) -> np.ndarray:
     return np.array(h.V, dtype=np.float32)
-
 
 def compute_crossings(h: HamiltonianSTL, zones_np: np.ndarray) -> int:
     H_arr = _h_edges_np(h)
@@ -74,7 +86,6 @@ def compute_crossings(h: HamiltonianSTL, zones_np: np.ndarray) -> int:
     h_cross = H_arr * (zones_np[:, :-1] != zones_np[:, 1:]).astype(np.float32)
     v_cross = V_arr * (zones_np[:-1, :] != zones_np[1:, :]).astype(np.float32)
     return int(h_cross.sum() + v_cross.sum())
-
 
 def compute_boundary_mask(zones_np: np.ndarray, grid_h: int, grid_w: int) -> torch.Tensor:
     mask = np.zeros((MAX_GRID_SIZE, MAX_GRID_SIZE), dtype=np.float32)
@@ -87,28 +98,58 @@ def compute_boundary_mask(zones_np: np.ndarray, grid_h: int, grid_w: int) -> tor
     return torch.from_numpy(mask)
 
 
-def encode_state_5ch(zones_np, boundary_mask, h, grid_w, grid_h):
-    state = torch.zeros(5, MAX_GRID_SIZE, MAX_GRID_SIZE)
+def encode_state_9ch(zones_np, boundary_mask, h, grid_w, grid_h, initial_crossings):
+    """Build 9-channel state tensor (Change 5)."""
+    state = torch.zeros(9, MAX_GRID_SIZE, MAX_GRID_SIZE)
     max_zone = max(zones_np.max(), 1)
-    state[0, :grid_h, :grid_w] = torch.from_numpy(zones_np.astype(np.float32)) / max_zone
+    zones_t = torch.from_numpy(zones_np.astype(np.float32))
+
+    # Ch 0: zones
+    state[0, :grid_h, :grid_w] = zones_t / max_zone
+
+    # Ch 1: H edges
     H_arr = _h_edges_np(h)
     state[1, :grid_h, :grid_w - 1] = torch.from_numpy(H_arr)
+
+    # Ch 2: V edges
     V_arr = _v_edges_np(h)
     state[2, :grid_h - 1, :grid_w] = torch.from_numpy(V_arr)
-    state[3] = boundary_mask.clone()
-    state[3, :grid_h, :grid_w] = torch.maximum(
-        state[3, :grid_h, :grid_w],
-        torch.ones(grid_h, grid_w) * 0.5
-    )
-    zones_t = torch.from_numpy(zones_np.astype(np.float32))
+
+    # Ch 3: grid validity
+    state[3, :grid_h, :grid_w] = 1.0
+
+    # Ch 4: zone boundary
+    state[4] = (boundary_mask > 0.5).float()
+
+    # Ch 5: crossing count (normalized)
     H_t = torch.from_numpy(H_arr)
     V_t = torch.from_numpy(V_arr)
+    crossing_count = torch.zeros(grid_h, grid_w)
     h_cross = H_t * (zones_t[:, :-1] != zones_t[:, 1:]).float()
     v_cross = V_t * (zones_t[:-1, :] != zones_t[1:, :]).float()
-    state[4, :grid_h, :grid_w - 1] = torch.maximum(state[4, :grid_h, :grid_w - 1], h_cross)
-    state[4, :grid_h, 1:grid_w] = torch.maximum(state[4, :grid_h, 1:grid_w], h_cross)
-    state[4, :grid_h - 1, :grid_w] = torch.maximum(state[4, :grid_h - 1, :grid_w], v_cross)
-    state[4, 1:grid_h, :grid_w] = torch.maximum(state[4, 1:grid_h, :grid_w], v_cross)
+    crossing_count[:, :-1] += h_cross
+    crossing_count[:, 1:] += h_cross
+    crossing_count[:-1, :] += v_cross
+    crossing_count[1:, :] += v_cross
+    max_cross = crossing_count.max()
+    if max_cross > 0:
+        state[5, :grid_h, :grid_w] = crossing_count / max_cross
+
+    # Ch 6: progress
+    current_c = crossing_count.sum().item() / 2.0
+    init_c = max(initial_crossings, 1)
+    state[6, :grid_h, :grid_w] = min(current_c / init_c, 1.0)
+
+    # Ch 7: y_coord
+    if grid_h > 1:
+        y_coords = torch.linspace(0, 1, grid_h).unsqueeze(1).expand(grid_h, grid_w)
+        state[7, :grid_h, :grid_w] = y_coords
+
+    # Ch 8: x_coord
+    if grid_w > 1:
+        x_coords = torch.linspace(0, 1, grid_w).unsqueeze(0).expand(grid_h, grid_w)
+        state[8, :grid_h, :grid_w] = x_coords
+
     return state
 
 
@@ -133,15 +174,15 @@ def apply_op(h, op_type, x, y, variant):
     try:
         if op_type == 'T':
             sub = h.get_subgrid((x, y), (x + 2, y + 2))
-            result = h.transpose_subgrid(sub, variant)
-            return result is not None and result is not False
+            result, status = h.transpose_subgrid(sub, variant)
+            return 'transposed_' in status
         elif op_type == 'F':
             if variant in ['n', 's']:
                 sub = h.get_subgrid((x, y), (x + 1, y + 2))
             else:
                 sub = h.get_subgrid((x, y), (x + 2, y + 1))
-            result = h.flip_subgrid(sub, variant)
-            return result is not None and result is not False
+            result, status = h.flip_subgrid(sub, variant)
+            return 'flipped_' in status
     except Exception:
         return False
     return False
@@ -150,10 +191,8 @@ def apply_op(h, op_type, x, y, variant):
 def save_grid_state(h):
     return (copy.deepcopy(h.H), copy.deepcopy(h.V))
 
-
 def restore_grid_state(h, state):
     h.H, h.V = state
-
 
 def dilate_mask(mask, dilation=2):
     if dilation <= 0:
@@ -167,11 +206,10 @@ def dilate_mask(mask, dilation=2):
 
 
 # ---------------------------------------------------------------------------
-# History buffer helpers
+# History buffer helpers (Change 7: normalize by initial_crossings)
 # ---------------------------------------------------------------------------
 
-def build_history_tensors(history_buffer, max_history, device):
-    """Build history tensors from a deque of recent effective ops."""
+def build_history_tensors(history_buffer, max_history, initial_crossings, device):
     hist_act = torch.zeros(1, max_history, dtype=torch.long, device=device)
     hist_py = torch.zeros(1, max_history, dtype=torch.long, device=device)
     hist_px = torch.zeros(1, max_history, dtype=torch.long, device=device)
@@ -179,15 +217,72 @@ def build_history_tensors(history_buffer, max_history, device):
     hist_ca = torch.zeros(1, max_history, dtype=torch.float, device=device)
     hist_mask = torch.zeros(1, max_history, dtype=torch.float, device=device)
 
+    norm = max(initial_crossings, 1)
     for i, entry in enumerate(history_buffer):
         hist_act[0, i] = entry['action']
         hist_py[0, i] = entry['py']
         hist_px[0, i] = entry['px']
-        hist_cb[0, i] = entry['cb'] / 60.0
-        hist_ca[0, i] = entry['ca'] / 60.0
+        hist_cb[0, i] = entry['cb'] / norm
+        hist_ca[0, i] = entry['ca'] / norm
         hist_mask[0, i] = 1.0
 
     return hist_act, hist_py, hist_px, hist_cb, hist_ca, hist_mask
+
+
+# ---------------------------------------------------------------------------
+# Change 10: History seeding — greedy boundary operations
+# ---------------------------------------------------------------------------
+
+def seed_history(h, zones_np, grid_w, grid_h, boundary_mask, max_seed=5):
+    """Run greedy boundary search and return first few effective ops for history seeding."""
+    seeded = []
+    current_crossings = compute_crossings(h, zones_np)
+
+    bpos = boundary_mask.nonzero(as_tuple=False)
+    if len(bpos) == 0:
+        return seeded, current_crossings
+
+    all_variants = list(VARIANT_MAP.keys())
+    for _ in range(max_seed * 10):  # try up to 50 ops
+        if len(seeded) >= max_seed:
+            break
+
+        # Random boundary position
+        idx = torch.randint(0, len(bpos), (1,)).item()
+        py, px = bpos[idx, 0].item(), bpos[idx, 1].item()
+
+        # Random variant
+        variant = all_variants[torch.randint(0, len(all_variants), (1,)).item()]
+        op_type = 'T' if variant in TRANSPOSE_VARIANTS else 'F'
+
+        if not validate_action(op_type, px, py, variant, grid_w, grid_h):
+            continue
+
+        saved = save_grid_state(h)
+        success = apply_op(h, op_type, px, py, variant)
+
+        if success:
+            new_crossings = compute_crossings(h, zones_np)
+            if new_crossings < current_crossings:
+                seeded.append({
+                    'action': VARIANT_MAP[variant],
+                    'py': py,
+                    'px': px,
+                    'cb': current_crossings,
+                    'ca': new_crossings,
+                    'kind': op_type,
+                    'variant': variant,
+                    'x': px, 'y': py,
+                    'crossings_before': current_crossings,
+                    'crossings_after': new_crossings,
+                })
+                current_crossings = new_crossings
+            else:
+                restore_grid_state(h, saved)
+        else:
+            restore_grid_state(h, saved)
+
+    return seeded, current_crossings
 
 
 # ---------------------------------------------------------------------------
@@ -226,7 +321,7 @@ def plot_cycle_on_ax(ax, h, zones_np, title):
 
 
 # ---------------------------------------------------------------------------
-# Iterative inference with history
+# Iterative inference with all fixes
 # ---------------------------------------------------------------------------
 
 def run_inference(
@@ -234,20 +329,26 @@ def run_inference(
     zones_np,
     boundary_mask,
     grid_w, grid_h,
-    max_history=8,
-    max_steps=50,
-    top_k_pos=15,
+    zone_pattern='unknown',
+    max_history=32,
+    max_steps=150,
+    top_k_per_hyp=8,
     top_k_act=3,
+    explore_prob=0.15,
     device=torch.device('cuda'),
     verbose=False,
 ):
     """
-    Iterative FusionNet inference with history context.
-
-    Unlike UNet inference, maintains a rolling history buffer of effective
-    operations and feeds it to the model at each step.
+    Iterative FusionNet v2 inference with:
+    - Correct init_pattern (Change 16)
+    - Per-hypothesis candidates (Change 8)
+    - Adaptive give-up (Change 9)
+    - History seeding (Change 10)
+    - Stochastic exploration (Change 11)
     """
-    h = HamiltonianSTL(grid_w, grid_h, init_pattern='zigzag')
+    # Change 16: Correct init_pattern
+    init_pattern = _infer_init_pattern(zone_pattern, zones_np, grid_w, grid_h)
+    h = HamiltonianSTL(grid_w, grid_h, init_pattern=init_pattern)
     initial_crossings = compute_crossings(h, zones_np)
     current_crossings = initial_crossings
 
@@ -259,46 +360,95 @@ def run_inference(
     history_buffer = deque(maxlen=max_history)
     sequence = []
     crossings_history = [initial_crossings]
+
+    # --- Change 10: History seeding ---
+    seeded_ops, current_crossings = seed_history(
+        h, zones_np, grid_w, grid_h, boundary_mask, max_seed=5
+    )
+    for op in seeded_ops:
+        history_buffer.append({
+            'action': op['action'], 'py': op['py'], 'px': op['px'],
+            'cb': op['cb'], 'ca': op['ca'],
+        })
+        sequence.append({
+            'kind': op['kind'], 'x': op['x'], 'y': op['y'],
+            'variant': op['variant'],
+            'crossings_before': op['crossings_before'],
+            'crossings_after': op['crossings_after'],
+        })
+        crossings_history.append(op['crossings_after'])
+
+    # --- Change 9: Adaptive thresholds ---
+    max_failures = max(30, initial_crossings * 2)
+    max_steps_adaptive = max(max_steps, initial_crossings * 5)
+
     no_improve_count = 0
     total_attempts = 0
     invalid_count = 0
 
     model.eval()
     with torch.no_grad():
-        for step in range(max_steps):
-            state = encode_state_5ch(zones_np, boundary_mask, h, grid_w, grid_h)
+        for step in range(max_steps_adaptive):
+            state = encode_state_9ch(
+                zones_np, boundary_mask, h, grid_w, grid_h, initial_crossings
+            )
             state_batch = state.unsqueeze(0).to(device)
 
-            # Build history tensors
             hist_act, hist_py, hist_px, hist_cb, hist_ca, hist_mask = \
-                build_history_tensors(history_buffer, max_history, device)
+                build_history_tensors(history_buffer, max_history, initial_crossings, device)
 
-            # Forward pass with history
             pos_logits, act_logits = model(
                 state_batch, hist_act, hist_py, hist_px, hist_cb, hist_ca, hist_mask
             )
 
-            # Get candidate boundary positions
             bpos = dilated_mask.nonzero(as_tuple=False)
             if len(bpos) == 0:
                 break
 
-            # Pool across K hypotheses: mean-softmax over boundary
+            # --- Change 8: Per-hypothesis candidates ---
             K = pos_logits.shape[1]
-            pos_flat = pos_logits[0].reshape(K, -1)
             mask_1d = dilated_mask.reshape(-1).bool()
-            pos_flat_masked = pos_flat.masked_fill(~mask_1d.unsqueeze(0), float('-inf'))
-            probs_k = torch.softmax(pos_flat_masked, dim=-1)
-            pooled_flat = probs_k.mean(dim=0)
-            pooled_2d = pooled_flat.reshape(MAX_GRID_SIZE, MAX_GRID_SIZE)
-            pos_scores = pooled_2d[bpos[:, 0], bpos[:, 1]]
-            k_pos = min(top_k_pos, len(pos_scores))
-            top_pos_indices = pos_scores.topk(k_pos).indices
+
+            candidates = []
+            for k in range(K):
+                pos_flat_k = pos_logits[0, k].reshape(-1)
+                pos_masked_k = pos_flat_k.masked_fill(~mask_1d, float('-inf'))
+                probs_k = torch.softmax(pos_masked_k, dim=-1)
+
+                n_top = min(top_k_per_hyp, int(mask_1d.sum().item()))
+                if n_top <= 0:
+                    continue
+                topk_vals, topk_idx = probs_k.topk(n_top)
+
+                for i in range(n_top):
+                    flat_idx = topk_idx[i].item()
+                    score = topk_vals[i].item()
+                    py = flat_idx // MAX_GRID_SIZE
+                    px = flat_idx % MAX_GRID_SIZE
+                    candidates.append((py, px, score, k))
+
+            # De-duplicate by position, keep highest score
+            pos_scores = {}
+            for py, px, score, k in candidates:
+                key = (py, px)
+                if key not in pos_scores or score > pos_scores[key][0]:
+                    pos_scores[key] = (score, k)
+
+            # Sort by score descending
+            sorted_candidates = sorted(pos_scores.items(), key=lambda x: -x[1][0])
+
+            # --- Change 11: Stochastic exploration ---
+            if torch.rand(1).item() < explore_prob and len(sorted_candidates) > 1:
+                # Sample from distribution instead of argmax
+                scores = torch.tensor([s for _, (s, _) in sorted_candidates])
+                probs = F.softmax(scores / 0.3, dim=0)  # temperature
+                idx = torch.multinomial(probs, 1).item()
+                # Move sampled to front
+                sorted_candidates = [sorted_candidates[idx]] + \
+                    [c for i, c in enumerate(sorted_candidates) if i != idx]
 
             applied = False
-            for pi in top_pos_indices:
-                py = bpos[pi, 0].item()
-                px = bpos[pi, 1].item()
+            for (py, px), (score, best_k) in sorted_candidates:
                 act_scores = act_logits[0, :, py, px]
                 k_act = min(top_k_act, NUM_ACTIONS)
                 top_act_indices = act_scores.topk(k_act).indices
@@ -326,16 +476,13 @@ def run_inference(
                                 'crossings_before': current_crossings,
                                 'crossings_after': new_crossings,
                             })
-
-                            # Update history buffer
                             history_buffer.append({
                                 'action': VARIANT_MAP.get(variant, 0),
-                                'py': min(py, MAX_GRID_SIZE - 1),
-                                'px': min(px, MAX_GRID_SIZE - 1),
+                                'py': min(py, grid_h - 1),
+                                'px': min(px, grid_w - 1),
                                 'cb': current_crossings,
                                 'ca': new_crossings,
                             })
-
                             current_crossings = new_crossings
                             crossings_history.append(current_crossings)
                             no_improve_count = 0
@@ -359,7 +506,7 @@ def run_inference(
 
             if not applied:
                 no_improve_count += 1
-                if no_improve_count >= 10:
+                if no_improve_count >= max_failures:
                     if verbose:
                         console.print(f"  Stopping: no improvement for {no_improve_count} steps")
                     break
@@ -379,6 +526,7 @@ def run_inference(
         'invalid_ops': invalid_count,
         'final_h': h,
         'history_length': len(history_buffer),
+        'seeded_ops': len(seeded_ops),
     }
 
 
@@ -391,55 +539,55 @@ def load_model(checkpoint_path, device):
     args = checkpoint.get('args', {})
 
     model = FusionNet(
-        in_channels=5,
+        in_channels=args.get('in_channels', 9),
         base_features=args.get('base_features', 48),
         n_hypotheses=args.get('n_hypotheses', 4),
         max_history=args.get('max_history', MAX_HISTORY),
         rnn_hidden=args.get('rnn_hidden', 192),
         rnn_layers=args.get('rnn_layers', 2),
+        max_grid_size=args.get('max_grid_size', MAX_GRID_SIZE),
         rnn_dropout=args.get('rnn_dropout', 0.15),
     ).to(device)
 
-    model.load_state_dict(checkpoint['model_state_dict'])
+    state_dict = checkpoint['model_state_dict']
+    # Handle DDP-wrapped state dicts
+    if any(k.startswith('module.') for k in state_dict.keys()):
+        state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
+
+    model.load_state_dict(state_dict)
     model.eval()
 
     return model, args
 
 
 # ---------------------------------------------------------------------------
-# Evaluation: all 4 zone patterns with per-pattern breakdown
+# Evaluation
 # ---------------------------------------------------------------------------
 
 def evaluate_all_patterns(
     model,
     jsonl_path,
     n_per_pattern=25,
-    max_steps=50,
-    max_history=8,
-    top_k_pos=15,
+    max_steps=150,
+    max_history=32,
+    top_k_per_hyp=8,
     top_k_act=3,
+    explore_prob=0.15,
     device=torch.device('cuda'),
     visualize=False,
     vis_dir='nn_checkpoints/fusion/vis',
 ):
-    """
-    Evaluate FusionNet on all 4 zone patterns with per-pattern statistics.
-
-    Samples n_per_pattern trajectories from each zone pattern (left_right,
-    voronoi, islands, stripes) and compares against SA baseline.
-    Reports per-pattern breakdown and overall summary.
-    """
     console.print(Panel.fit(
-        "[bold cyan]FusionNet (CNN+RNN+FiLM) - All Zone Patterns Evaluation[/bold cyan]\n"
+        "[bold cyan]FusionNet v2 (CNN+RNN+FiLM) - All Zone Patterns Evaluation[/bold cyan]\n"
         f"Data: {jsonl_path}\n"
         f"Patterns: {', '.join(ALL_PATTERNS)}\n"
         f"Samples per pattern: {n_per_pattern}\n"
         f"Max steps: {max_steps} | Max history: {max_history}\n"
-        f"Top-k: positions={top_k_pos}, actions={top_k_act}",
+        f"Per-hyp top-k: {top_k_per_hyp} | Actions top-k: {top_k_act}\n"
+        f"Explore prob: {explore_prob}",
         border_style="cyan"
     ))
 
-    # Load and group trajectories by zone pattern
     with open(jsonl_path) as f:
         lines = f.readlines()
 
@@ -449,7 +597,6 @@ def evaluate_all_patterns(
         pattern = traj.get('zone_pattern', 'unknown')
         pattern_lines[pattern].append(line)
 
-    # Report dataset composition
     comp_table = Table(title="[bold]Dataset Composition[/bold]", box=box.SIMPLE)
     comp_table.add_column("Zone Pattern", style="cyan")
     comp_table.add_column("Total Trajectories", justify="right")
@@ -460,7 +607,6 @@ def evaluate_all_patterns(
         comp_table.add_row(p, str(available), str(n_test))
     console.print(comp_table)
 
-    # Select test samples from each pattern (last n_per_pattern from each)
     test_samples = []
     for pattern in ALL_PATTERNS:
         available = pattern_lines[pattern]
@@ -502,14 +648,16 @@ def evaluate_all_patterns(
                 boundary_mask=boundary_mask,
                 grid_w=grid_w,
                 grid_h=grid_h,
+                zone_pattern=pattern,
                 max_history=max_history,
                 max_steps=max_steps,
-                top_k_pos=top_k_pos,
+                top_k_per_hyp=top_k_per_hyp,
                 top_k_act=top_k_act,
+                explore_prob=explore_prob,
                 device=device,
             )
 
-            # SA baseline from trajectory
+            # SA baseline
             sa_initial = traj.get('initial_crossings', result['initial_crossings'])
             sa_final = traj.get('final_crossings', result['final_crossings'])
             sa_reduction = sa_initial - sa_final if sa_initial else 0
@@ -533,11 +681,12 @@ def evaluate_all_patterns(
             if visualize:
                 os.makedirs(vis_dir, exist_ok=True)
                 fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 7))
-                h_init = HamiltonianSTL(grid_w, grid_h, init_pattern='zigzag')
+                init_pat = _infer_init_pattern(pattern, zones_np, grid_w, grid_h)
+                h_init = HamiltonianSTL(grid_w, grid_h, init_pattern=init_pat)
                 plot_cycle_on_ax(ax1, h_init, zones_np,
                                  f"Initial (crossings={result['initial_crossings']})")
                 plot_cycle_on_ax(ax2, result['final_h'], zones_np,
-                                 f"FusionNet (crossings={result['final_crossings']}, "
+                                 f"FusionNet v2 (crossings={result['final_crossings']}, "
                                  f"ops={result['num_operations']})")
                 fig.suptitle(
                     f"Sample {len(all_results)} | {pattern} | "
@@ -549,7 +698,7 @@ def evaluate_all_patterns(
                 plt.close(fig)
 
             status = (f"{pattern} | red={result['reduction']}/{result['sa_reduction']} | "
-                      f"ops={result['num_operations']}")
+                      f"ops={result['num_operations']} | seed={result['seeded_ops']}")
             progress.update(task, advance=1, status=status)
 
     _display_all_pattern_results(all_results)
@@ -557,18 +706,16 @@ def evaluate_all_patterns(
 
 
 def _display_all_pattern_results(results):
-    """Display per-pattern breakdown + overall summary + per-sample detail."""
     if not results:
         console.print("[bold red]No results to display[/bold red]")
         return
 
-    # --- Per-pattern summary table ---
     pattern_results = defaultdict(list)
     for r in results:
         pattern_results[r['zone_pattern']].append(r)
 
     per_pattern = Table(
-        title="[bold]Per-Pattern Results: FusionNet vs SA Baseline[/bold]",
+        title="[bold]Per-Pattern Results: FusionNet v2 vs SA Baseline[/bold]",
         box=box.ROUNDED
     )
     per_pattern.add_column("Pattern", style="cyan")
@@ -604,21 +751,17 @@ def _display_all_pattern_results(results):
         nonzero = sum(1 for r in fusion_reds if r > 0)
 
         per_pattern.add_row(
-            pattern,
-            str(n),
-            f"{avg_zones:.0f}",
-            grid_str,
+            pattern, str(n), f"{avg_zones:.0f}", grid_str,
             f"{np.mean(fusion_reds):.1f} ({np.mean(fusion_pcts):.1f}%)",
             f"{np.mean(sa_reds):.1f} ({np.mean(sa_pcts):.1f}%)",
-            f"{np.mean(fusion_ops):.1f}",
-            f"{np.mean(sa_eff):.1f}",
+            f"{np.mean(fusion_ops):.1f}", f"{np.mean(sa_eff):.1f}",
             f"{wins}/{n} ({wins/n*100:.0f}%)",
             f"{nonzero}/{n} ({nonzero/n*100:.0f}%)",
         )
 
     console.print(per_pattern)
 
-    # --- Overall summary ---
+    # Overall summary
     reductions = [r['reduction'] for r in results]
     reduction_pcts = [r['reduction_pct'] for r in results]
     ops = [r['num_operations'] for r in results]
@@ -627,9 +770,9 @@ def _display_all_pattern_results(results):
     sa_ops = [r.get('sa_ops', 0) for r in results]
     sa_eff_ops = [r.get('sa_effective_ops', 0) for r in results]
 
-    summary = Table(title="[bold]Overall: FusionNet vs SA Baseline[/bold]", box=box.ROUNDED)
+    summary = Table(title="[bold]Overall: FusionNet v2 vs SA Baseline[/bold]", box=box.ROUNDED)
     summary.add_column("Metric", style="cyan")
-    summary.add_column("FusionNet", style="green", justify="right")
+    summary.add_column("FusionNet v2", style="green", justify="right")
     summary.add_column("SA Baseline", style="yellow", justify="right")
 
     summary.add_row(
@@ -657,18 +800,9 @@ def _display_all_pattern_results(results):
     close = sum(1 for r in results if abs(r['reduction'] - r['sa_reduction']) <= 2)
     nonzero = sum(1 for r in reductions if r > 0)
 
-    summary.add_row(
-        "FusionNet >= SA",
-        f"{wins}/{len(results)} ({wins/len(results)*100:.0f}%)", "",
-    )
-    summary.add_row(
-        "Within 2 of SA",
-        f"{close}/{len(results)} ({close/len(results)*100:.0f}%)", "",
-    )
-    summary.add_row(
-        "Samples with reduction > 0",
-        f"{nonzero}/{len(results)} ({nonzero/len(results)*100:.0f}%)", "",
-    )
+    summary.add_row("FusionNet >= SA", f"{wins}/{len(results)} ({wins/len(results)*100:.0f}%)", "")
+    summary.add_row("Within 2 of SA", f"{close}/{len(results)} ({close/len(results)*100:.0f}%)", "")
+    summary.add_row("Samples with reduction > 0", f"{nonzero}/{len(results)} ({nonzero/len(results)*100:.0f}%)", "")
 
     if np.mean(ops) > 0 and np.mean(sa_ops) > 0:
         summary.add_row(
@@ -678,24 +812,17 @@ def _display_all_pattern_results(results):
             f"{np.mean(sa_reductions)/max(np.mean(sa_eff_ops), 0.01):.2f} effective",
         )
 
-    summary.add_row(
-        "Hamiltonicity preserved",
-        "[bold green]100%[/bold green] (by construction)", "100%",
-    )
-
+    summary.add_row("Hamiltonicity preserved", "[bold green]100%[/bold green] (by construction)", "100%")
     console.print(summary)
 
-    # --- Per-sample detail table (grouped by pattern) ---
+    # Per-sample detail
     for pattern in ALL_PATTERNS:
         pr = pattern_results.get(pattern, [])
         if not pr:
             continue
 
         n_show = min(15, len(pr))
-        detail = Table(
-            title=f"[bold]{pattern}[/bold] — Per-Sample Results (first {n_show})",
-            box=box.SIMPLE,
-        )
+        detail = Table(title=f"[bold]{pattern}[/bold] — Per-Sample Results (first {n_show})", box=box.SIMPLE)
         detail.add_column("#", style="dim")
         detail.add_column("Grid")
         detail.add_column("Zones", justify="right")
@@ -705,7 +832,7 @@ def _display_all_pattern_results(results):
         detail.add_column("SA Final", justify="right")
         detail.add_column("SA Red%", justify="right")
         detail.add_column("Fusion Ops", justify="right")
-        detail.add_column("SA Eff Ops", justify="right")
+        detail.add_column("Seed", justify="right")
         detail.add_column("Hist", justify="right")
 
         for i, r in enumerate(pr[:n_show]):
@@ -717,31 +844,25 @@ def _display_all_pattern_results(results):
                 style = "red"
 
             detail.add_row(
-                str(i + 1),
-                r.get('grid_size', '?'),
-                str(r.get('n_zones', '?')),
-                str(r['initial_crossings']),
-                str(r['final_crossings']),
-                f"{r['reduction_pct']:.1f}%",
-                str(r.get('sa_final', '?')),
+                str(i + 1), r.get('grid_size', '?'), str(r.get('n_zones', '?')),
+                str(r['initial_crossings']), str(r['final_crossings']),
+                f"{r['reduction_pct']:.1f}%", str(r.get('sa_final', '?')),
                 f"{r.get('sa_reduction_pct', 0):.1f}%",
-                str(r['num_operations']),
-                str(r.get('sa_effective_ops', '?')),
+                str(r['num_operations']), str(r.get('seeded_ops', 0)),
                 str(r['history_length']),
                 style=style,
             )
 
         console.print(detail)
 
-    # --- Final panel ---
     console.print(Panel.fit(
         f"[bold]Final Summary[/bold]\n"
         f"Patterns tested: {', '.join(ALL_PATTERNS)}\n"
         f"Total samples: {len(results)}\n"
         f"Avg initial crossings: {np.mean([r['initial_crossings'] for r in results]):.1f}\n"
-        f"Avg final crossings (FusionNet): {np.mean([r['final_crossings'] for r in results]):.1f}\n"
+        f"Avg final crossings (FusionNet v2): {np.mean([r['final_crossings'] for r in results]):.1f}\n"
         f"Avg final crossings (SA): {np.mean([r['sa_final'] for r in results]):.1f}\n"
-        f"Avg operations (FusionNet): {np.mean(ops):.1f}\n"
+        f"Avg operations (FusionNet v2): {np.mean(ops):.1f}\n"
         f"Avg crossing reduction: {np.mean(reduction_pcts):.1f}% "
         f"vs SA: {np.mean(sa_reduction_pcts):.1f}%",
         border_style="cyan"
@@ -753,33 +874,23 @@ def _display_all_pattern_results(results):
 # ---------------------------------------------------------------------------
 
 def main():
-    parser = argparse.ArgumentParser(description='FusionNet Inference & Evaluation')
-    parser.add_argument('--checkpoint', default='nn_checkpoints/fusion/best.pt',
-                        help='Path to trained model checkpoint')
-    parser.add_argument('--jsonl', default='combined_dataset.jsonl',
-                        help='Path to combined_dataset.jsonl')
-    parser.add_argument('--n_per_pattern', type=int, default=25,
-                        help='Number of test samples per zone pattern')
-    parser.add_argument('--max_steps', type=int, default=50,
-                        help='Max inference steps per sample')
-    parser.add_argument('--top_k_pos', type=int, default=15,
-                        help='Top-k boundary positions to try')
-    parser.add_argument('--top_k_act', type=int, default=3,
-                        help='Top-k actions per position to try')
-    parser.add_argument('--device', default='cuda',
-                        help='Device (cuda or cpu)')
-    parser.add_argument('--verbose', action='store_true',
-                        help='Print per-step details')
-    parser.add_argument('--visualize', action='store_true',
-                        help='Save comparison PNGs')
-    parser.add_argument('--vis_dir', default='nn_checkpoints/fusion/vis',
-                        help='Directory for visualization PNGs')
+    parser = argparse.ArgumentParser(description='FusionNet v2 Inference & Evaluation')
+    parser.add_argument('--checkpoint', default='nn_checkpoints/fusion/best.pt')
+    parser.add_argument('--jsonl', default='combined_dataset.jsonl')
+    parser.add_argument('--n_per_pattern', type=int, default=25)
+    parser.add_argument('--max_steps', type=int, default=150)
+    parser.add_argument('--top_k_per_hyp', type=int, default=8)
+    parser.add_argument('--top_k_act', type=int, default=3)
+    parser.add_argument('--explore_prob', type=float, default=0.15)
+    parser.add_argument('--device', default='cuda')
+    parser.add_argument('--verbose', action='store_true')
+    parser.add_argument('--visualize', action='store_true')
+    parser.add_argument('--vis_dir', default='nn_checkpoints/fusion/vis')
 
     args = parser.parse_args()
     device = torch.device(args.device if torch.cuda.is_available() else 'cpu')
 
-    # Load model
-    console.print(f"\n[bold]Loading FusionNet from {args.checkpoint}...[/bold]")
+    console.print(f"\n[bold]Loading FusionNet v2 from {args.checkpoint}...[/bold]")
     model, model_args = load_model(args.checkpoint, device)
     n_params = sum(p.numel() for p in model.parameters())
     max_history = model_args.get('max_history', MAX_HISTORY)
@@ -787,15 +898,15 @@ def main():
     console.print(f"  Max history: {max_history}")
     console.print(f"  Device: {device}")
 
-    # Evaluate all 4 zone patterns
     results = evaluate_all_patterns(
         model=model,
         jsonl_path=args.jsonl,
         n_per_pattern=args.n_per_pattern,
         max_steps=args.max_steps,
         max_history=max_history,
-        top_k_pos=args.top_k_pos,
+        top_k_per_hyp=args.top_k_per_hyp,
         top_k_act=args.top_k_act,
+        explore_prob=args.explore_prob,
         device=device,
         visualize=args.visualize,
         vis_dir=args.vis_dir,
@@ -804,7 +915,6 @@ def main():
     if args.visualize:
         console.print(f"\n[bold]Visualizations saved to {args.vis_dir}/[/bold]")
 
-    # Save results
     output_path = Path(args.checkpoint).parent / 'inference_results.json'
     serializable = []
     for r in results:

@@ -63,10 +63,15 @@ def generate_tasks(
 
                 for seed in range(num_seeds):
                     # Generate unique task ID
+                    # Include stripe direction for stripes to avoid ID collisions
+                    pattern_tag = pattern
+                    if pattern == "stripes":
+                        pattern_tag = f"stripes_{zone_params.stripe_direction}"
+
                     task_id = (
                         f"{machine_cfg.machine_id}_"
                         f"{width}x{height}_"
-                        f"{pattern}_"
+                        f"{pattern_tag}_"
                         f"{sa_config_name}_"
                         f"seed{seed}"
                     )
