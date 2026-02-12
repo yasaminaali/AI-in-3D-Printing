@@ -348,8 +348,19 @@ def train(args):
         start_epoch = ckpt.get('epoch', 0) + 1
         global_step = ckpt.get('global_step', 0)
         best_val_loss = ckpt.get('val_loss', float('inf'))
+        if 'val_metrics' in ckpt:
+            vm = ckpt['val_metrics']
+            best_metrics = {
+                'val_loss': best_val_loss,
+                'epoch': ckpt.get('epoch', 0),
+                'pos_top1': vm.get('pos_top1', 0),
+                'pos_top5': vm.get('pos_top5', 0),
+                'oracle_top1': vm.get('oracle_top1', 0),
+                'act_at_gt': vm.get('act_at_gt', 0),
+                'act_e2e': vm.get('act_e2e', 0),
+            }
         if is_main_process():
-            console.print(f"  Resumed from epoch {start_epoch - 1}")
+            console.print(f"  Resumed from epoch {start_epoch - 1}, best_val_loss={best_val_loss:.4f}")
 
     # GradScaler not needed for bf16 on H100, but we keep autocast
     os.makedirs(args.checkpoint_dir, exist_ok=True)
