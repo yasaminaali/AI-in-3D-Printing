@@ -86,35 +86,37 @@ def _infer_init_pattern(zone_pattern, zone_grid, grid_w, grid_h):
 
 
 def _compute_boundary_mask(zones, grid_w, grid_h):
-    """Compute zone boundary mask at natural resolution."""
-    mask = torch.zeros(grid_h, grid_w)
-    zt = torch.from_numpy(zones.astype(np.float32))
+    """Compute zone boundary mask at natural resolution. Returns numpy array."""
+    mask = np.zeros((grid_h, grid_w), dtype=np.float32)
+    zf = zones.astype(np.float32)
     if grid_w > 1:
-        diff_h = (zt[:, :-1] != zt[:, 1:]).float()
-        mask[:, :grid_w - 1] = torch.maximum(mask[:, :grid_w - 1], diff_h)
-        mask[:, 1:grid_w] = torch.maximum(mask[:, 1:grid_w], diff_h)
+        diff_h = (zf[:, :-1] != zf[:, 1:]).astype(np.float32)
+        mask[:, :grid_w - 1] = np.maximum(mask[:, :grid_w - 1], diff_h)
+        mask[:, 1:grid_w] = np.maximum(mask[:, 1:grid_w], diff_h)
     if grid_h > 1:
-        diff_v = (zt[:-1, :] != zt[1:, :]).float()
-        mask[:grid_h - 1, :] = torch.maximum(mask[:grid_h - 1, :], diff_v)
-        mask[1:grid_h, :] = torch.maximum(mask[1:grid_h, :], diff_v)
+        diff_v = (zf[:-1, :] != zf[1:, :]).astype(np.float32)
+        mask[:grid_h - 1, :] = np.maximum(mask[:grid_h - 1, :], diff_v)
+        mask[1:grid_h, :] = np.maximum(mask[1:grid_h, :], diff_v)
     return mask
 
 
 def _encode_state(zones, boundary_mask, H_edges, V_edges, grid_w, grid_h):
-    """Encode state as 4 channels at natural grid resolution (no padding to 128)."""
-    state = torch.zeros(4, grid_h, grid_w)
+    """Encode state as 4 channels at natural grid resolution (no padding to 128).
+    Returns numpy array (not torch) to avoid IPC issues with multiprocessing.Pool.
+    """
+    state = np.zeros((4, grid_h, grid_w), dtype=np.float32)
     max_zone = max(zones.max(), 1)
-    state[0, :grid_h, :grid_w] = torch.from_numpy(zones.astype(np.float32)) / max_zone
+    state[0, :grid_h, :grid_w] = zones.astype(np.float32) / max_zone
 
     H_arr = np.array(H_edges, dtype=np.float32)
-    state[1, :grid_h, :grid_w - 1] = torch.from_numpy(H_arr[:grid_h, :grid_w - 1])
+    state[1, :grid_h, :grid_w - 1] = H_arr[:grid_h, :grid_w - 1]
 
     V_arr = np.array(V_edges, dtype=np.float32)
-    state[2, :grid_h - 1, :grid_w] = torch.from_numpy(V_arr[:grid_h - 1, :grid_w])
+    state[2, :grid_h - 1, :grid_w] = V_arr[:grid_h - 1, :grid_w]
 
     # Channel 3: boundary_combined (0.5 inside grid, 1.0 at boundary)
     state[3, :grid_h, :grid_w] = 0.5  # inside grid
-    state[3, :grid_h, :grid_w] = torch.maximum(
+    state[3, :grid_h, :grid_w] = np.maximum(
         state[3, :grid_h, :grid_w],
         boundary_mask[:grid_h, :grid_w]
     )
@@ -205,20 +207,20 @@ def process_trajectory(args):
             # Encode state from BEFORE this effective op (using snapshots)
             state_before = _encode_state(zones, boundary_mask, H_snap, V_snap, grid_w, grid_h)
             states.append(state_before)
-            targets.append(torch.tensor([
+            targets.append(np.array([
                 min(y, grid_h - 1),
                 min(x, grid_w - 1),
                 min(VARIANT_MAP.get(variant, 0), 11),
-            ], dtype=torch.long))
+            ], dtype=np.int64))
             sample_initial_crossings.append(initial_crossings)
 
             # Save current history snapshot
             cur_len = len(history_buffer)
-            h_act = torch.zeros(MAX_HISTORY, dtype=torch.long)
-            h_py = torch.zeros(MAX_HISTORY, dtype=torch.long)
-            h_px = torch.zeros(MAX_HISTORY, dtype=torch.long)
-            h_cb = torch.zeros(MAX_HISTORY, dtype=torch.float)
-            h_ca = torch.zeros(MAX_HISTORY, dtype=torch.float)
+            h_act = np.zeros(MAX_HISTORY, dtype=np.int64)
+            h_py = np.zeros(MAX_HISTORY, dtype=np.int64)
+            h_px = np.zeros(MAX_HISTORY, dtype=np.int64)
+            h_cb = np.zeros(MAX_HISTORY, dtype=np.float32)
+            h_ca = np.zeros(MAX_HISTORY, dtype=np.float32)
 
             for i, entry in enumerate(history_buffer):
                 h_act[i] = entry['action']
@@ -248,19 +250,20 @@ def process_trajectory(args):
     if not states:
         return None
 
+    # Return numpy arrays — torch tensors fail with multiprocessing.Pool IPC
     return (
         traj_idx,
         grid_w,
         grid_h,
-        torch.stack(states),
-        torch.stack(targets),
-        torch.tensor(sample_initial_crossings, dtype=torch.long),
-        torch.stack(hist_actions),
-        torch.stack(hist_positions_y),
-        torch.stack(hist_positions_x),
-        torch.stack(hist_crossings_before),
-        torch.stack(hist_crossings_after),
-        torch.tensor(hist_lengths, dtype=torch.long),
+        np.stack(states),
+        np.stack(targets),
+        np.array(sample_initial_crossings, dtype=np.int64),
+        np.stack(hist_actions),
+        np.stack(hist_positions_y),
+        np.stack(hist_positions_x),
+        np.stack(hist_crossings_before),
+        np.stack(hist_crossings_after),
+        np.array(hist_lengths, dtype=np.int64),
     )
 
 
@@ -326,8 +329,19 @@ def main():
         with Pool(n_workers) as pool:
             for result in pool.imap_unordered(process_trajectory, task_args, chunksize=2):
                 if result is not None:
-                    (traj_idx, gw, gh, states, targets, init_cross,
-                     h_act, h_py, h_px, h_cb, h_ca, h_len) = result
+                    (traj_idx, gw, gh, states_np, targets_np, init_cross_np,
+                     h_act_np, h_py_np, h_px_np, h_cb_np, h_ca_np, h_len_np) = result
+
+                    # Convert numpy -> torch on main process (avoids IPC fd issues)
+                    states = torch.from_numpy(states_np)
+                    targets = torch.from_numpy(targets_np)
+                    init_cross = torch.from_numpy(init_cross_np)
+                    h_act = torch.from_numpy(h_act_np)
+                    h_py = torch.from_numpy(h_py_np)
+                    h_px = torch.from_numpy(h_px_np)
+                    h_cb = torch.from_numpy(h_cb_np)
+                    h_ca = torch.from_numpy(h_ca_np)
+                    h_len = torch.from_numpy(h_len_np)
 
                     n_samples = len(states)
                     key = f"{gw}x{gh}"
