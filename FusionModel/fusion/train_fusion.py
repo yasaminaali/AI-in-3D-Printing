@@ -167,7 +167,7 @@ def validate(model, val_loader, device, pos_weight=5.0, diversity_weight=0.5, us
             # Per-hypothesis: use float32 logits
             pos_flat = pos_logits_f.reshape(B, K, -1)
             mask_k = mask_flat.unsqueeze(1).expand_as(pos_flat)
-            pos_masked_k = pos_flat.masked_fill(~mask_k, float('-inf'))
+            pos_masked_k = pos_flat.masked_fill(~mask_k, -1e9)
 
             # Per-hypothesis candidates (match inference approach)
             probs_k = torch.softmax(pos_masked_k, dim=-1)
@@ -419,6 +419,13 @@ def train(args):
                     pos_weight=args.pos_weight,
                     diversity_weight=args.diversity_weight,
                 )
+
+            if torch.isnan(loss) or torch.isinf(loss):
+                if is_main_process():
+                    console.print(f"[red]WARNING: NaN/Inf loss at step {global_step}, skipping batch[/red]")
+                    console.print(f"  pos_loss={pos_loss.item()}, act_loss={act_loss.item()}")
+                optimizer.zero_grad()
+                continue
 
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)

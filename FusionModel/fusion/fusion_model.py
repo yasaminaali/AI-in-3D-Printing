@@ -359,20 +359,29 @@ def compute_loss(position_logits, action_logits, target_y, target_x, target_acti
     device = position_logits.device
     batch_idx = torch.arange(B, device=device)
 
-    # Flatten spatial dims
-    pos_flat = position_logits.reshape(B, K, -1)
+    # Flatten spatial dims — compute in float32 for numerical stability
+    pos_flat = position_logits.float().reshape(B, K, -1)
     mask_flat = boundary_masks.reshape(B, -1).bool()
 
     target_flat = target_y * W + target_x
     mask_flat[batch_idx, target_flat] = True
 
+    # Ensure every sample has at least one valid position
+    has_valid = mask_flat.any(dim=-1)
+    if not has_valid.all():
+        # Fallback: unmask the target position for samples with empty masks
+        for i in range(B):
+            if not has_valid[i]:
+                mask_flat[i, target_flat[i]] = True
+
     # Expand mask for all K hypotheses
     mask_k = mask_flat.unsqueeze(1).expand_as(pos_flat)
-    pos_masked = pos_flat.masked_fill(~mask_k, float('-inf'))
+    # Use large negative instead of -inf to avoid NaN in softmax
+    pos_masked = pos_flat.masked_fill(~mask_k, -1e9)
 
     # --- Gaussian heatmap targets (Change 6) ---
     # Build per-sample Gaussian targets, masked to boundary, renormalized
-    gaussian_targets = torch.zeros(B, H * W, device=device)
+    gaussian_targets = torch.zeros(B, H * W, device=device, dtype=torch.float32)
     for i in range(B):
         g = gaussian_2d(H, W, target_y[i], target_x[i], sigma=gaussian_sigma)
         g_flat = g.reshape(-1)
@@ -388,22 +397,23 @@ def compute_loss(position_logits, action_logits, target_y, target_x, target_acti
             g_flat[target_flat[i]] = 1.0
         gaussian_targets[i] = g_flat
 
-    # Log-softmax per hypothesis over boundary positions
+    # Log-softmax per hypothesis over boundary positions (float32)
     log_probs = F.log_softmax(pos_masked, dim=-1)  # [B, K, H*W]
 
-    # KL divergence per hypothesis: sum(target * (log(target) - log_pred))
-    # = sum(target * log(target)) - sum(target * log_pred)
-    # Since target is fixed, minimize -sum(target * log_pred)
+    # Cross-entropy: -sum(target * log_pred)
     gt_expanded = gaussian_targets.unsqueeze(1).expand_as(log_probs)  # [B, K, H*W]
     per_hyp_loss = -(gt_expanded * log_probs).sum(dim=-1)  # [B, K]
+
+    # Clamp to avoid NaN from any remaining numerical issues
+    per_hyp_loss = per_hyp_loss.clamp(max=100.0)
 
     # WTA: min across hypotheses
     pos_loss = per_hyp_loss.min(dim=1).values.mean()
 
-    # Diversity: soft winner assignment entropy
-    winner_probs = F.softmax(-per_hyp_loss, dim=1)
+    # Diversity: soft winner assignment entropy (float32)
+    winner_probs = F.softmax(-per_hyp_loss.float(), dim=1)
     avg_usage = winner_probs.mean(dim=0)
-    diversity_loss = (avg_usage * (avg_usage + 1e-8).log()).sum() + math.log(K)
+    diversity_loss = (avg_usage * torch.log(avg_usage + 1e-8)).sum() + math.log(K)
 
     # --- Action loss at GT position ---
     act_at_gt = action_logits[batch_idx, :, target_y, target_x]
