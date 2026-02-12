@@ -181,20 +181,20 @@ class FusionDataset(Dataset):
         return self.states.size(0)
 
     def __getitem__(self, idx):
-        state_4ch = self.states[idx].clone().float()  # upcast from float16
+        state_4ch = self.states[idx].float()  # upcast float16 -> float32
         t = self.targets[idx]
         ty, tx, action = t[0].item(), t[1].item(), t[2].item()
 
-        grid_w = self.grid_ws[idx].item()
-        grid_h = self.grid_hs[idx].item()
-        init_cross = self.initial_crossings[idx].item()
+        grid_w = int(self.grid_ws[idx].item())
+        grid_h = int(self.grid_hs[idx].item())
+        init_cross = int(self.initial_crossings[idx].item())
 
-        hist_act = self.history_actions[idx].clone().long()
-        hist_py = self.history_positions_y[idx].clone().long()
-        hist_px = self.history_positions_x[idx].clone().long()
-        hist_cb = self.history_crossings_before[idx].clone().float()
-        hist_ca = self.history_crossings_after[idx].clone().float()
-        hist_len = self.history_lengths[idx].item()
+        hist_act = self.history_actions[idx].long()
+        hist_py = self.history_positions_y[idx].long()
+        hist_px = self.history_positions_x[idx].long()
+        hist_cb = self.history_crossings_before[idx].float()
+        hist_ca = self.history_crossings_after[idx].float()
+        hist_len = int(self.history_lengths[idx].item())
 
         # --- Augmentation on 4ch state first ---
         hflipped = False
@@ -284,40 +284,46 @@ def create_train_val_split(
     for key, group in grid_groups.items():
         gw = group['grid_w']
         gh = group['grid_h']
-        states = group['states'].float()  # [N, 4, gh, gw]
+        states = group['states'].half()  # Keep float16 to save memory; upcast in __getitem__
         N = states.shape[0]
 
-        # Pad to 4 x MAX_GRID_SIZE x MAX_GRID_SIZE
+        # Pad to 4 x MAX_GRID_SIZE x MAX_GRID_SIZE (stay in float16)
         if gh < MAX_GRID_SIZE or gw < MAX_GRID_SIZE:
-            padded = torch.zeros(N, 4, MAX_GRID_SIZE, MAX_GRID_SIZE)
+            padded = torch.zeros(N, 4, MAX_GRID_SIZE, MAX_GRID_SIZE, dtype=torch.float16)
             padded[:, :, :gh, :gw] = states
             states = padded
 
         all_states.append(states)
-        all_targets.append(group['targets'].long())
-        all_traj_ids.append(group['traj_ids'].long())
-        all_initial_crossings.append(group['initial_crossings'].long())
-        all_grid_ws.append(torch.full((N,), gw, dtype=torch.long))
-        all_grid_hs.append(torch.full((N,), gh, dtype=torch.long))
-        all_hist_actions.append(group['history_actions'].long())
-        all_hist_py.append(group['history_positions_y'].long())
-        all_hist_px.append(group['history_positions_x'].long())
-        all_hist_cb.append(group['history_crossings_before'].float())
-        all_hist_ca.append(group['history_crossings_after'].float())
-        all_hist_lengths.append(group['history_lengths'].long())
+        all_targets.append(group['targets'].short())  # int16
+        all_traj_ids.append(group['traj_ids'].int())   # int32
+        all_initial_crossings.append(group['initial_crossings'].short())
+        all_grid_ws.append(torch.full((N,), gw, dtype=torch.int16))
+        all_grid_hs.append(torch.full((N,), gh, dtype=torch.int16))
+        all_hist_actions.append(group['history_actions'].byte())   # uint8
+        all_hist_py.append(group['history_positions_y'].byte())
+        all_hist_px.append(group['history_positions_x'].byte())
+        all_hist_cb.append(group['history_crossings_before'].half())  # float16
+        all_hist_ca.append(group['history_crossings_after'].half())
+        all_hist_lengths.append(group['history_lengths'].byte())
 
-    states = torch.cat(all_states, dim=0)
-    targets = torch.cat(all_targets, dim=0)
-    traj_ids = torch.cat(all_traj_ids, dim=0)
-    initial_crossings = torch.cat(all_initial_crossings, dim=0)
-    grid_ws = torch.cat(all_grid_ws, dim=0)
-    grid_hs = torch.cat(all_grid_hs, dim=0)
-    hist_actions = torch.cat(all_hist_actions, dim=0)
-    hist_py = torch.cat(all_hist_py, dim=0)
-    hist_px = torch.cat(all_hist_px, dim=0)
-    hist_cb = torch.cat(all_hist_cb, dim=0)
-    hist_ca = torch.cat(all_hist_ca, dim=0)
-    hist_lengths = torch.cat(all_hist_lengths, dim=0)
+    states = torch.cat(all_states, dim=0)          # float16
+    targets = torch.cat(all_targets, dim=0)          # int16
+    traj_ids = torch.cat(all_traj_ids, dim=0)        # int32
+    initial_crossings = torch.cat(all_initial_crossings, dim=0)  # int16
+    grid_ws = torch.cat(all_grid_ws, dim=0)          # int16
+    grid_hs = torch.cat(all_grid_hs, dim=0)          # int16
+    hist_actions = torch.cat(all_hist_actions, dim=0) # uint8
+    hist_py = torch.cat(all_hist_py, dim=0)          # uint8
+    hist_px = torch.cat(all_hist_px, dim=0)          # uint8
+    hist_cb = torch.cat(all_hist_cb, dim=0)          # float16
+    hist_ca = torch.cat(all_hist_ca, dim=0)          # float16
+    hist_lengths = torch.cat(all_hist_lengths, dim=0) # uint8
+
+    # Free loaded data early
+    del data, grid_groups, all_states, all_targets, all_traj_ids
+    del all_initial_crossings, all_grid_ws, all_grid_hs
+    del all_hist_actions, all_hist_py, all_hist_px
+    del all_hist_cb, all_hist_ca, all_hist_lengths
 
     # Trajectory-level split
     rng = np.random.RandomState(seed)

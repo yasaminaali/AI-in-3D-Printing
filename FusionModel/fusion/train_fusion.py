@@ -560,7 +560,7 @@ def main():
     parser.add_argument('--base_features', type=int, default=48)
     parser.add_argument('--max_grid_size', type=int, default=128)
     parser.add_argument('--boundary_dilation', type=int, default=1)
-    parser.add_argument('--num_workers', type=int, default=4)
+    parser.add_argument('--num_workers', type=int, default=2)
     parser.add_argument('--pos_weight', type=float, default=5.0)
     parser.add_argument('--n_hypotheses', type=int, default=4)
     parser.add_argument('--diversity_weight', type=float, default=0.5)
