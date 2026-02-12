@@ -554,7 +554,7 @@ def train(args):
 def main():
     parser = argparse.ArgumentParser(description='FusionNet v2 Training')
     parser.add_argument('--data_path', type=str, default='FusionModel/fusion/fusion_data.pt')
-    parser.add_argument('--checkpoint_dir', type=str, default='nn_checkpoints/fusion')
+    parser.add_argument('--checkpoint_dir', type=str, default='FusionModel/nn_checkpoints/fusion')
     parser.add_argument('--resume', type=str, default=None, help='Resume from checkpoint')
     parser.add_argument('--epochs', type=int, default=200)
     parser.add_argument('--batch_size', type=int, default=64, help='Per-GPU batch size')

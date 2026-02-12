@@ -14,7 +14,7 @@
 # View output:   tail -f fusion_train_%j.out
 #
 # To resume from a checkpoint:
-#   RESUME_CKPT=FusionModel/nn_checkpoints/fusion/checkpoint_epoch_50.pt sbatch sbatch_train_fusion.sh
+#   RESUME_CKPT=FusionModel/nn_checkpoints/fusion/best.pt sbatch sbatch_train_fusion.sh
 #
 #SBATCH --job-name=fusion_train
 #SBATCH --output=fusion_train_%j.out
