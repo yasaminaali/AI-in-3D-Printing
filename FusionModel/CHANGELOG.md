@@ -177,11 +177,73 @@ RESUME_CKPT=path/to/checkpoint.pt sbatch sbatch_train_fusion.sh
 CHECKPOINT=path/to/best.pt TEST_JSONL=path/to/test.jsonl N_SAMPLES=100 sbatch sbatch_inference_fusion.sh
 ```
 
-### Staged Validation
+### Step-by-Step Usage
 
-| Stage | Duration | GPUs | Epochs | Pass Criteria |
-|-------|----------|------|--------|---------------|
-| 1 (Smoke) | ~5 min | 1 | 10 | val_pos_acc_top1 > 20% |
+**1. Push code & pull on TamIA**
+```bash
+# Local machine
+git add -A && git commit -m "FusionNet v2" && git push
+
+# SSH into TamIA
+cd ~/links/projects/aip-rnishat/shared/AI-in-3D-Printing
+git pull
+```
+
+**2. Build training data** (CPU job, ~15-30 min)
+```bash
+sbatch sbatch_build_fusion_data.sh
+# Monitor: tail -f fusion_build_data_<jobid>.out
+```
+
+**3. Staged training** — start small, verify, scale up
+
+For **1-GPU stages** (Stage 1 & 2), use an interactive session:
+```bash
+srun --account=aip-rnishat --qos=normal --gres=gpu:h100:1 \
+     --mem=64G --cpus-per-task=8 --time=01:00:00 --pty bash
+
+# Once on the node:
+module load python/3.11.5 cuda/12.6
+cd ~/links/projects/aip-rnishat/shared/AI-in-3D-Printing
+source sa_gpu_env/bin/activate
+
+# Stage 1: Smoke test (10 epochs, ~5 min)
+PYTHONPATH=$(pwd):$PYTHONPATH python3 FusionModel/fusion/train_fusion.py \
+    --epochs 10 --batch_size 64 --learning_rate 4e-4 --patience 10
+
+# Stage 2: Architecture validation (15 epochs, ~15 min)
+PYTHONPATH=$(pwd):$PYTHONPATH python3 FusionModel/fusion/train_fusion.py \
+    --epochs 15 --batch_size 64 --learning_rate 4e-4 --patience 15
+```
+
+For **4-GPU stages** (Stage 3 & 4), use sbatch:
+```bash
+# Stage 3: Short DDP run (30 epochs, ~1-2 hr)
+EPOCHS=30 PATIENCE=30 sbatch --time=03:00:00 sbatch_train_fusion.sh
+
+# Stage 4: Full training (200 epochs, ~5-7 hr) — only if Stage 3 passes
+sbatch sbatch_train_fusion.sh
+```
+
+**4. Resume from checkpoint** (if job times out)
+```bash
+RESUME_CKPT=nn_checkpoints/fusion/checkpoint_epoch_30.pt sbatch sbatch_train_fusion.sh
+```
+
+**5. Run inference evaluation**
+```bash
+sbatch sbatch_inference_fusion.sh
+# Results: FusionModel/nn_checkpoints/fusion/inference_results.json
+```
+
+### Staged Validation Criteria
+
+| Stage | Duration | GPUs | Epochs | Pass If |
+|-------|----------|------|--------|---------|
+| 1 (Smoke) | ~5 min | 1 | 10 | val_pos_acc_top1 trending > 20% |
 | 2 (Arch) | ~15 min | 1 | 15 | No NaN, loss decreasing |
 | 3 (Short) | ~1-2 hr | 4 | 30 | pos_acc > 25%, any inference reductions |
 | 4 (Full) | ~5-7 hr | 4 | 200 | pos_acc > 35%, avg reduction > 5.0, >50% samples improved |
+
+### Dataset Note
+`final_dataset.jsonl` contains 18,386 trajectories (18,263 SA + 123 GA). The 123 GA records lack `zone_grid` and are automatically skipped during data building (0.7% of data).

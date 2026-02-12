@@ -50,9 +50,9 @@ echo "Python version: $(python3 --version)"
 echo ""
 
 # --- Paths ---
-# Default: uses combined_dataset.jsonl from the datasets directory
+# Default: uses final_dataset.jsonl from the datasets directory
 # Override with environment variable: DATASET_JSONL=/path/to/file.jsonl
-DATASET_JSONL="${DATASET_JSONL:-datasets/combined_dataset.jsonl}"
+DATASET_JSONL="${DATASET_JSONL:-datasets/final_dataset.jsonl}"
 OUTPUT_PT="FusionModel/fusion/fusion_data.pt"
 
 echo "Input JSONL:  $DATASET_JSONL"

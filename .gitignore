@@ -29,7 +29,7 @@ Thumbs.db
 .vscode/
 .opencode/
 *.swp
-
+*.jsonl
 # Temp files
 *.log
 *.tmp

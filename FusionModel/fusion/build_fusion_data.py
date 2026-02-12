@@ -138,7 +138,9 @@ def process_trajectory(args):
 
     grid_w = traj.get('grid_W', 30)
     grid_h = traj.get('grid_H', 30)
-    zone_grid = traj['zone_grid']
+    zone_grid = traj.get('zone_grid')
+    if zone_grid is None or len(zone_grid) != grid_w * grid_h:
+        return None  # GA records lack zone_grid; skip
     zone_pattern = traj.get('zone_pattern', 'unknown')
     zones = np.array(zone_grid).reshape(grid_h, grid_w)
 
@@ -269,7 +271,7 @@ def _compute_layer_index(y, x, grid_h, grid_w):
 
 def main():
     parser = argparse.ArgumentParser(description='Build Fusion training data v2')
-    parser.add_argument('--input', default='combined_dataset.jsonl')
+    parser.add_argument('--input', default='datasets/final_dataset.jsonl')
     parser.add_argument('--output', default='FusionModel/fusion/fusion_data.pt')
     parser.add_argument('--workers', type=int, default=0, help='0 = 30%% of cores')
     parser.add_argument('--limit', type=int, default=0, help='Process only first N trajectories (0 = all)')
