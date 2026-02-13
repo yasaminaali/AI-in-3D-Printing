@@ -1,18 +1,22 @@
 """
-FusionNet v2 (CNN+RNN+FiLM) Inference for Hamiltonian Path Optimization.
+FusionNet v3 (CNN+RNN+FiLM) Inference for Hamiltonian Path Optimization.
 
-Key changes from v1:
-- Change 1:  MAX_GRID_SIZE=128
-- Change 8:  Per-hypothesis candidate selection (not mean-softmax)
-- Change 9:  Adaptive give-up threshold
-- Change 10: History seeding with greedy operations
-- Change 11: Stochastic exploration (sample with prob 0.15)
-- Change 5:  9-channel state encoding
-- Change 7:  Crossing normalization by initial_crossings
-- Change 16: Correct init_pattern from zone_pattern
+Target-aware inference with uniformity-biased scoring and k-step lookahead.
+
+Key decisions:
+- Decision 1: Target crossing optimization (not minimize to zero)
+- Decision 2: Pattern-specific target ranges (left_right/stripes [20-40%],
+              islands [10-25%], voronoi [5-20%])
+- Decision 3: No history seeding (empty = FiLM identity = pure CNN first step)
+- Decision 5: Full trajectories in training (no truncation)
+- Decision 6: Two-phase inference (reduction + redistribution)
+- Decision 7: k-step lookahead (k=3-5 by grid size)
+- Decision 8: Init pattern = zigzag (matches training data)
+- Decision 9: Density-based uniformity via boundary CV
 
 Usage:
-    PYTHONPATH=$(pwd):$PYTHONPATH python FusionModel/fusion/inference_fusion.py --checkpoint nn_checkpoints/fusion/best.pt
+    PYTHONPATH=$(pwd):$PYTHONPATH python FusionModel/fusion/inference_fusion.py \\
+        --checkpoint FusionModel/nn_checkpoints/fusion/best.pt
 """
 
 import torch
@@ -52,22 +56,43 @@ TRANSPOSE_VARIANTS = {'nl', 'nr', 'sl', 'sr', 'eb', 'ea', 'wa', 'wb'}
 FLIP_VARIANTS = {'n', 's', 'e', 'w'}
 ALL_PATTERNS = ['left_right', 'voronoi', 'islands', 'stripes']
 
+# Decision 2: Pattern-specific target reduction ranges (inference-only)
+TARGET_RANGES = {
+    'left_right': (0.20, 0.40),
+    'stripes':    (0.20, 0.40),
+    'islands':    (0.10, 0.25),
+    'voronoi':    (0.05, 0.20),
+}
+
+# Decision 9: CV thresholds for acceptable uniformity
+CV_THRESHOLDS = {
+    'left_right': 0.3,
+    'stripes':    0.3,
+    'islands':    0.5,
+    'voronoi':    0.5,
+}
+
+# Decision 7: k-step lookahead depth by grid area
+K_BY_GRID_AREA = [
+    (2500,  3),  # 30x30, 50x50
+    (3600,  4),  # 30x100, 60x60
+    (10001, 5),  # 60x100, 80x80, 100x100
+]
+BRANCHING = {3: [5, 3, 2], 4: [5, 3, 2, 1], 5: [5, 3, 2, 1, 1]}
+
 
 # ---------------------------------------------------------------------------
 # Change 16: Infer correct init_pattern
 # ---------------------------------------------------------------------------
 
 def _infer_init_pattern(zone_pattern, zones_np, grid_w, grid_h):
-    """Infer the init_pattern that SA would have used."""
-    if zone_pattern in ('left_right', 'leftright', 'lr'):
-        return 'vertical_zigzag'
-    elif zone_pattern == 'stripes':
-        col0 = zones_np[:, 0]
-        if len(set(col0.tolist())) == 1:
-            return 'vertical_zigzag'
-        return 'zigzag'
-    else:
-        return 'zigzag'
+    """All existing dataset was generated with default zigzag (horizontal).
+
+    The SA code at the time of dataset generation used HamiltonianSTL(w, h)
+    without specifying init_pattern, which defaults to 'zigzag'. The 'auto'
+    logic was added later but the dataset was never regenerated.
+    """
+    return 'zigzag'
 
 
 # ---------------------------------------------------------------------------
@@ -96,6 +121,67 @@ def compute_boundary_mask(zones_np: np.ndarray, grid_h: int, grid_w: int) -> tor
     mask[:grid_h - 1, :grid_w] = np.maximum(mask[:grid_h - 1, :grid_w], v_diff)
     mask[1:grid_h, :grid_w] = np.maximum(mask[1:grid_h, :grid_w], v_diff)
     return torch.from_numpy(mask)
+
+
+def compute_boundary_density_cv(h, zones_np, grid_w, grid_h):
+    """Compute coefficient of variation of crossing density across zone-pair boundaries.
+
+    Groups all zone-boundary edges by zone pair (min_id, max_id), computes
+    density = crossings / boundary_length for each pair, then returns the CV
+    (std / mean) of those densities.
+
+    Returns:
+        cv: float, 0 = perfect uniformity, <0.3 good, >1 bad
+        details: dict mapping (za, zb) -> {length, crossings, density}
+    """
+    H_arr = np.array(h.H, dtype=np.float32)[:grid_h, :grid_w - 1]
+    V_arr = np.array(h.V, dtype=np.float32)[:grid_h - 1, :grid_w]
+
+    zones = zones_np[:grid_h, :grid_w]
+
+    # Horizontal zone boundaries: between (r, c) and (r, c+1)
+    h_diff = zones[:, :-1] != zones[:, 1:]
+    h_za = zones[:, :-1][h_diff]
+    h_zb = zones[:, 1:][h_diff]
+    h_crossing = H_arr[h_diff]
+
+    # Vertical zone boundaries: between (r, c) and (r+1, c)
+    v_diff = zones[:-1, :] != zones[1:, :]
+    v_za = zones[:-1, :][v_diff]
+    v_zb = zones[1:, :][v_diff]
+    v_crossing = V_arr[v_diff]
+
+    if len(h_za) == 0 and len(v_za) == 0:
+        return 0.0, {}
+
+    all_za = np.concatenate([h_za, v_za]) if len(h_za) > 0 and len(v_za) > 0 else (h_za if len(h_za) > 0 else v_za)
+    all_zb = np.concatenate([h_zb, v_zb]) if len(h_zb) > 0 and len(v_zb) > 0 else (h_zb if len(h_zb) > 0 else v_zb)
+    all_cross = np.concatenate([h_crossing, v_crossing]) if len(h_crossing) > 0 and len(v_crossing) > 0 else (h_crossing if len(h_crossing) > 0 else v_crossing)
+
+    pair_min = np.minimum(all_za, all_zb)
+    pair_max = np.maximum(all_za, all_zb)
+
+    unique_pairs = set(zip(pair_min.tolist(), pair_max.tolist()))
+
+    densities = []
+    details = {}
+    for za, zb in unique_pairs:
+        mask = (pair_min == za) & (pair_max == zb)
+        length = int(mask.sum())
+        crossings = int((all_cross[mask] > 0.5).sum())
+        density = crossings / length if length > 0 else 0.0
+        densities.append(density)
+        details[(za, zb)] = {'length': length, 'crossings': crossings, 'density': density}
+
+    if len(densities) < 2:
+        return 0.0, details
+
+    densities = np.array(densities)
+    mean_d = densities.mean()
+    if mean_d == 0:
+        return 0.0, details
+    cv = float(densities.std() / mean_d)
+    return cv, details
 
 
 def encode_state_9ch(zones_np, boundary_mask, h, grid_w, grid_h, initial_crossings):
@@ -321,7 +407,209 @@ def plot_cycle_on_ax(ax, h, zones_np, title):
 
 
 # ---------------------------------------------------------------------------
-# Iterative inference with all fixes
+# Model candidate extraction (shared by greedy + lookahead)
+# ---------------------------------------------------------------------------
+
+def _get_model_candidates(model, h_obj, zones_np, boundary_mask, grid_w, grid_h,
+                          initial_crossings, history_buffer, dilated_mask, device,
+                          max_history=32, top_k_per_hyp=8, top_k_act=3, n_best=5):
+    """Run model forward pass and return top-n valid candidate ops.
+
+    Returns list of dicts: [{op_type, x, y, variant, confidence, action_idx}, ...]
+    """
+    state = encode_state_9ch(zones_np, boundary_mask, h_obj, grid_w, grid_h, initial_crossings)
+    state_batch = state.unsqueeze(0).to(device)
+
+    hist_act, hist_py, hist_px, hist_cb, hist_ca, hist_mask = \
+        build_history_tensors(history_buffer, max_history, initial_crossings, device)
+
+    pos_logits, act_logits = model(
+        state_batch, hist_act, hist_py, hist_px, hist_cb, hist_ca, hist_mask
+    )
+
+    mask_1d = dilated_mask.reshape(-1).bool()
+    K = pos_logits.shape[1]
+
+    candidates = []
+    for kk in range(K):
+        pos_flat = pos_logits[0, kk].reshape(-1)
+        pos_masked = pos_flat.masked_fill(~mask_1d, float('-inf'))
+        probs = torch.softmax(pos_masked, dim=-1)
+        n_top = min(top_k_per_hyp, int(mask_1d.sum().item()))
+        if n_top <= 0:
+            continue
+        topk_vals, topk_idx = probs.topk(n_top)
+        for i in range(n_top):
+            flat_idx = topk_idx[i].item()
+            score = topk_vals[i].item()
+            py = flat_idx // MAX_GRID_SIZE
+            px = flat_idx % MAX_GRID_SIZE
+            candidates.append((py, px, score, kk))
+
+    # De-duplicate by position, keep highest score
+    pos_scores = {}
+    for py, px, score, kk in candidates:
+        key = (py, px)
+        if key not in pos_scores or score > pos_scores[key][0]:
+            pos_scores[key] = (score, kk)
+
+    sorted_cands = sorted(pos_scores.items(), key=lambda x: -x[1][0])
+
+    valid_ops = []
+    for (py, px), (score, best_k) in sorted_cands:
+        if len(valid_ops) >= n_best:
+            break
+        act_scores = act_logits[0, :, py, px]
+        k_act = min(top_k_act, NUM_ACTIONS)
+        top_acts = act_scores.topk(k_act).indices
+
+        for ai in top_acts:
+            action_idx = ai.item()
+            variant = VARIANT_REV[action_idx]
+            op_type = 'T' if action_idx < 8 else 'F'
+
+            if validate_action(op_type, px, py, variant, grid_w, grid_h):
+                valid_ops.append({
+                    'op_type': op_type, 'x': px, 'y': py,
+                    'variant': variant, 'confidence': score,
+                    'action_idx': action_idx,
+                })
+                break  # one valid action per position
+
+    return valid_ops[:n_best]
+
+
+# ---------------------------------------------------------------------------
+# Decision 7: k-step lookahead search
+# ---------------------------------------------------------------------------
+
+def _get_lookahead_k(grid_w, grid_h):
+    """Return lookahead depth k based on grid area."""
+    area = grid_w * grid_h
+    for threshold, k in K_BY_GRID_AREA:
+        if area <= threshold:
+            return k
+    return 5
+
+
+def lookahead_search(model, h, zones_np, boundary_mask, grid_w, grid_h,
+                     zone_pattern, initial_crossings, current_crossings, current_cv,
+                     history_buffer, dilated_mask, device,
+                     max_history=32, top_k_per_hyp=8, top_k_act=3,
+                     phase='reduction', uniformity_lambda=0.3):
+    """k-step lookahead with aggressive pruning.
+
+    Simulates k steps of inference, scoring leaf states by:
+      score = crossing_reduction + λ × uniformity_improvement + 0.1 × efficiency
+
+    Returns: best first op dict or None.
+    """
+    k = _get_lookahead_k(grid_w, grid_h)
+    branching = BRANCHING[k]
+
+    def _score_leaf(leaf_crossings, leaf_cv, depth):
+        """Score a leaf state relative to current state at search root."""
+        reduction = current_crossings - leaf_crossings
+        cv_improvement = max(0.0, current_cv - leaf_cv)
+        efficiency = reduction / max(depth, 1)
+        return reduction + uniformity_lambda * cv_improvement * current_crossings + 0.1 * efficiency
+
+    def _search(h_H, h_V, hist_list, cross, depth, first_op):
+        """Recursive DFS with branching pruning. Returns [(score, first_op), ...]."""
+        if depth >= k:
+            h_tmp = HamiltonianSTL(grid_w, grid_h, init_pattern='zigzag')
+            h_tmp.H = h_H
+            h_tmp.V = h_V
+            cv, _ = compute_boundary_density_cv(h_tmp, zones_np, grid_w, grid_h)
+            return [(_score_leaf(cross, cv, depth), first_op)]
+
+        n_branch = branching[depth]
+
+        # Build temporary HamiltonianSTL for model query
+        h_tmp = HamiltonianSTL(grid_w, grid_h, init_pattern='zigzag')
+        h_tmp.H = [row[:] for row in h_H]
+        h_tmp.V = [row[:] for row in h_V]
+        hist_buf = deque(hist_list, maxlen=max_history)
+
+        cands = _get_model_candidates(
+            model, h_tmp, zones_np, boundary_mask, grid_w, grid_h,
+            initial_crossings, hist_buf, dilated_mask, device,
+            max_history=max_history, top_k_per_hyp=top_k_per_hyp,
+            top_k_act=top_k_act, n_best=n_branch,
+        )
+
+        if not cands:
+            h_tmp2 = HamiltonianSTL(grid_w, grid_h, init_pattern='zigzag')
+            h_tmp2.H = h_H
+            h_tmp2.V = h_V
+            cv, _ = compute_boundary_density_cv(h_tmp2, zones_np, grid_w, grid_h)
+            return [(_score_leaf(cross, cv, depth), first_op)]
+
+        results = []
+        for cand in cands:
+            # Save + apply
+            h_tmp.H = [row[:] for row in h_H]
+            h_tmp.V = [row[:] for row in h_V]
+            success = apply_op(h_tmp, cand['op_type'], cand['x'], cand['y'], cand['variant'])
+            if not success:
+                continue
+
+            new_cross = compute_crossings(h_tmp, zones_np)
+
+            # Prune: in reduction phase, only expand if crossings don't increase
+            if phase == 'reduction' and new_cross > cross:
+                continue
+            # In redistribution: allow neutral ops
+            if phase == 'redistribution' and new_cross > cross:
+                continue
+
+            new_H = [row[:] for row in h_tmp.H]
+            new_V = [row[:] for row in h_tmp.V]
+
+            new_hist = list(hist_list)
+            new_hist.append({
+                'action': VARIANT_MAP.get(cand['variant'], 0),
+                'py': min(cand['y'], grid_h - 1),
+                'px': min(cand['x'], grid_w - 1),
+                'cb': cross,
+                'ca': new_cross,
+            })
+            if len(new_hist) > max_history:
+                new_hist = new_hist[-max_history:]
+
+            this_first = first_op if first_op is not None else cand
+            sub = _search(new_H, new_V, new_hist, new_cross, depth + 1, this_first)
+            results.extend(sub)
+
+        if not results:
+            h_tmp3 = HamiltonianSTL(grid_w, grid_h, init_pattern='zigzag')
+            h_tmp3.H = h_H
+            h_tmp3.V = h_V
+            cv, _ = compute_boundary_density_cv(h_tmp3, zones_np, grid_w, grid_h)
+            return [(_score_leaf(cross, cv, depth), first_op)]
+
+        return results
+
+    # Launch search from current state
+    h_H = [row[:] for row in h.H]
+    h_V = [row[:] for row in h.V]
+    hist_list = list(history_buffer)
+
+    all_leaves = _search(h_H, h_V, hist_list, current_crossings, 0, None)
+
+    valid = [(s, op) for s, op in all_leaves if op is not None and s > 0]
+    if not valid:
+        # Fall back: accept any non-None result
+        valid = [(s, op) for s, op in all_leaves if op is not None]
+    if not valid:
+        return None
+
+    best_score, best_op = max(valid, key=lambda x: x[0])
+    return best_op
+
+
+# ---------------------------------------------------------------------------
+# Iterative inference with all fixes + Decisions 1-9
 # ---------------------------------------------------------------------------
 
 def run_inference(
@@ -337,16 +625,21 @@ def run_inference(
     explore_prob=0.15,
     device=torch.device('cuda'),
     verbose=False,
+    use_lookahead=True,
+    uniformity_lambda=0.3,
 ):
     """
-    Iterative FusionNet v2 inference with:
-    - Correct init_pattern (Change 16)
-    - Per-hypothesis candidates (Change 8)
-    - Adaptive give-up (Change 9)
-    - History seeding (Change 10)
-    - Stochastic exploration (Change 11)
+    FusionNet v3 inference with:
+    - Correct init_pattern (Decision 8)
+    - No history seeding (Decision 3)
+    - Per-hypothesis candidates + stochastic exploration
+    - Adaptive give-up threshold
+    - Target-aware stopping with pattern-specific ranges (Decisions 1, 2, 5)
+    - Two-phase inference: reduction + redistribution (Decision 6)
+    - Uniformity-biased scoring via density CV (Decisions 6, 9)
+    - k-step lookahead (Decision 7)
     """
-    # Change 16: Correct init_pattern
+    # Decision 8: Correct init_pattern
     init_pattern = _infer_init_pattern(zone_pattern, zones_np, grid_w, grid_h)
     h = HamiltonianSTL(grid_w, grid_h, init_pattern=init_pattern)
     initial_crossings = compute_crossings(h, zones_np)
@@ -361,51 +654,162 @@ def run_inference(
     sequence = []
     crossings_history = [initial_crossings]
 
-    # --- Change 10: History seeding ---
-    seeded_ops, current_crossings = seed_history(
-        h, zones_np, grid_w, grid_h, boundary_mask, max_seed=5
-    )
-    for op in seeded_ops:
-        history_buffer.append({
-            'action': op['action'], 'py': op['py'], 'px': op['px'],
-            'cb': op['cb'], 'ca': op['ca'],
-        })
-        sequence.append({
-            'kind': op['kind'], 'x': op['x'], 'y': op['y'],
-            'variant': op['variant'],
-            'crossings_before': op['crossings_before'],
-            'crossings_after': op['crossings_after'],
-        })
-        crossings_history.append(op['crossings_after'])
+    # Decision 3: empty history (FiLM identity = pure CNN for first step)
+    seeded_ops = []
 
-    # --- Change 9: Adaptive thresholds ---
+    # Decision 2: target ranges
+    low, high = TARGET_RANGES.get(zone_pattern, (0.10, 0.40))
+    target_upper = round(initial_crossings * (1.0 - low))   # enter target when below
+    target_lower = round(initial_crossings * (1.0 - high))  # ideal lower bound
+    cv_threshold = CV_THRESHOLDS.get(zone_pattern, 0.5)
+
+    # Decision 6 + 9: uniformity tracking
+    initial_cv, _ = compute_boundary_density_cv(h, zones_np, grid_w, grid_h)
+    current_cv = initial_cv
+    phase = 'reduction'
+
+    # Adaptive thresholds
     max_failures = max(30, initial_crossings * 2)
     max_steps_adaptive = max(max_steps, initial_crossings * 5)
 
     no_improve_count = 0
     total_attempts = 0
     invalid_count = 0
+    redistribution_steps = 0
+    max_redistribution = 30
 
     model.eval()
     with torch.no_grad():
         for step in range(max_steps_adaptive):
+            # --- Phase transition check ---
+            if current_crossings <= target_upper:
+                phase = 'redistribution'
+                if current_cv < cv_threshold:
+                    if verbose:
+                        console.print(
+                            f"  Step {step}: TARGET REACHED — "
+                            f"crossings={current_crossings} (<={target_upper}), "
+                            f"CV={current_cv:.3f} (<{cv_threshold})"
+                        )
+                    break
+                if redistribution_steps >= max_redistribution:
+                    if verbose:
+                        console.print(
+                            f"  Step {step}: redistribution limit — CV={current_cv:.3f}"
+                        )
+                    break
+
+            # --- Decision 7: k-step lookahead ---
+            if use_lookahead:
+                best_op = lookahead_search(
+                    model, h, zones_np, boundary_mask, grid_w, grid_h,
+                    zone_pattern, initial_crossings, current_crossings, current_cv,
+                    history_buffer, dilated_mask, device,
+                    max_history=max_history, top_k_per_hyp=top_k_per_hyp,
+                    top_k_act=top_k_act, phase=phase,
+                    uniformity_lambda=uniformity_lambda,
+                )
+
+                if best_op is not None:
+                    saved = save_grid_state(h)
+                    success = apply_op(
+                        h, best_op['op_type'], best_op['x'], best_op['y'],
+                        best_op['variant']
+                    )
+                    total_attempts += 1
+
+                    if success:
+                        new_crossings = compute_crossings(h, zones_np)
+                        accept = False
+
+                        if phase == 'reduction':
+                            accept = new_crossings < current_crossings
+                        else:
+                            # Redistribution: accept if crossings don't increase
+                            # AND (crossings decrease OR uniformity improves)
+                            if new_crossings <= current_crossings:
+                                new_cv, _ = compute_boundary_density_cv(
+                                    h, zones_np, grid_w, grid_h
+                                )
+                                accept = (new_crossings < current_crossings
+                                          or new_cv < current_cv)
+                                if accept:
+                                    current_cv = new_cv
+
+                        if accept:
+                            if phase != 'redistribution':
+                                new_cv, _ = compute_boundary_density_cv(
+                                    h, zones_np, grid_w, grid_h
+                                )
+                                current_cv = new_cv
+
+                            sequence.append({
+                                'kind': best_op['op_type'],
+                                'x': best_op['x'], 'y': best_op['y'],
+                                'variant': best_op['variant'],
+                                'crossings_before': current_crossings,
+                                'crossings_after': new_crossings,
+                            })
+                            history_buffer.append({
+                                'action': VARIANT_MAP.get(best_op['variant'], 0),
+                                'py': min(best_op['y'], grid_h - 1),
+                                'px': min(best_op['x'], grid_w - 1),
+                                'cb': current_crossings,
+                                'ca': new_crossings,
+                            })
+                            current_crossings = new_crossings
+                            crossings_history.append(current_crossings)
+                            no_improve_count = 0
+                            if phase == 'redistribution':
+                                redistribution_steps += 1
+
+                            if verbose:
+                                console.print(
+                                    f"  Step {step+1} [{phase}]: "
+                                    f"{best_op['op_type']}({best_op['variant']}) "
+                                    f"at ({best_op['x']},{best_op['y']}) "
+                                    f"-> crossings {current_crossings}, "
+                                    f"CV={current_cv:.3f}"
+                                )
+                        else:
+                            restore_grid_state(h, saved)
+                            no_improve_count += 1
+                    else:
+                        restore_grid_state(h, saved)
+                        invalid_count += 1
+                        no_improve_count += 1
+                else:
+                    no_improve_count += 1
+
+                if no_improve_count >= max_failures:
+                    if verbose:
+                        console.print(
+                            f"  Stopping: no improvement for "
+                            f"{no_improve_count} steps"
+                        )
+                    break
+                continue
+
+            # --- Greedy fallback (no lookahead) ---
             state = encode_state_9ch(
                 zones_np, boundary_mask, h, grid_w, grid_h, initial_crossings
             )
             state_batch = state.unsqueeze(0).to(device)
 
             hist_act, hist_py, hist_px, hist_cb, hist_ca, hist_mask = \
-                build_history_tensors(history_buffer, max_history, initial_crossings, device)
+                build_history_tensors(
+                    history_buffer, max_history, initial_crossings, device
+                )
 
             pos_logits, act_logits = model(
-                state_batch, hist_act, hist_py, hist_px, hist_cb, hist_ca, hist_mask
+                state_batch, hist_act, hist_py, hist_px, hist_cb, hist_ca,
+                hist_mask
             )
 
             bpos = dilated_mask.nonzero(as_tuple=False)
             if len(bpos) == 0:
                 break
 
-            # --- Change 8: Per-hypothesis candidates ---
             K = pos_logits.shape[1]
             mask_1d = dilated_mask.reshape(-1).bool()
 
@@ -427,25 +831,28 @@ def run_inference(
                     px = flat_idx % MAX_GRID_SIZE
                     candidates.append((py, px, score, k))
 
-            # De-duplicate by position, keep highest score
             pos_scores = {}
             for py, px, score, k in candidates:
                 key = (py, px)
                 if key not in pos_scores or score > pos_scores[key][0]:
                     pos_scores[key] = (score, k)
 
-            # Sort by score descending
-            sorted_candidates = sorted(pos_scores.items(), key=lambda x: -x[1][0])
+            sorted_candidates = sorted(
+                pos_scores.items(), key=lambda x: -x[1][0]
+            )
 
-            # --- Change 11: Stochastic exploration ---
-            if torch.rand(1).item() < explore_prob and len(sorted_candidates) > 1:
-                # Sample from distribution instead of argmax
-                scores = torch.tensor([s for _, (s, _) in sorted_candidates])
-                probs = F.softmax(scores / 0.3, dim=0)  # temperature
+            # Stochastic exploration
+            if (torch.rand(1).item() < explore_prob
+                    and len(sorted_candidates) > 1):
+                scores = torch.tensor(
+                    [s for _, (s, _) in sorted_candidates]
+                )
+                probs = F.softmax(scores / 0.3, dim=0)
                 idx = torch.multinomial(probs, 1).item()
-                # Move sampled to front
-                sorted_candidates = [sorted_candidates[idx]] + \
-                    [c for i, c in enumerate(sorted_candidates) if i != idx]
+                sorted_candidates = (
+                    [sorted_candidates[idx]]
+                    + [c for i, c in enumerate(sorted_candidates) if i != idx]
+                )
 
             applied = False
             for (py, px), (score, best_k) in sorted_candidates:
@@ -459,7 +866,9 @@ def run_inference(
                     op_type = 'T' if action_idx < 8 else 'F'
                     total_attempts += 1
 
-                    if not validate_action(op_type, px, py, variant, grid_w, grid_h):
+                    if not validate_action(
+                        op_type, px, py, variant, grid_w, grid_h
+                    ):
                         invalid_count += 1
                         continue
 
@@ -468,10 +877,29 @@ def run_inference(
 
                     if success:
                         new_crossings = compute_crossings(h, zones_np)
-                        if new_crossings < current_crossings:
+                        accept = False
+
+                        if phase == 'reduction':
+                            accept = new_crossings < current_crossings
+                        else:
+                            if new_crossings <= current_crossings:
+                                new_cv, _ = compute_boundary_density_cv(
+                                    h, zones_np, grid_w, grid_h
+                                )
+                                accept = (new_crossings < current_crossings
+                                          or new_cv < current_cv)
+                                if accept:
+                                    current_cv = new_cv
+
+                        if accept:
+                            if phase != 'redistribution':
+                                new_cv, _ = compute_boundary_density_cv(
+                                    h, zones_np, grid_w, grid_h
+                                )
+                                current_cv = new_cv
+
                             sequence.append({
-                                'kind': op_type,
-                                'x': px, 'y': py,
+                                'kind': op_type, 'x': px, 'y': py,
                                 'variant': variant,
                                 'crossings_before': current_crossings,
                                 'crossings_after': new_crossings,
@@ -487,12 +915,15 @@ def run_inference(
                             crossings_history.append(current_crossings)
                             no_improve_count = 0
                             applied = True
+                            if phase == 'redistribution':
+                                redistribution_steps += 1
 
                             if verbose:
                                 console.print(
-                                    f"  Step {step+1}: {op_type}({variant}) at ({px},{py}) "
-                                    f"-> crossings {current_crossings} "
-                                    f"[hist={len(history_buffer)}]"
+                                    f"  Step {step+1} [{phase}]: "
+                                    f"{op_type}({variant}) at ({px},{py}) "
+                                    f"-> crossings {current_crossings}, "
+                                    f"CV={current_cv:.3f}"
                                 )
                             break
                         else:
@@ -508,11 +939,20 @@ def run_inference(
                 no_improve_count += 1
                 if no_improve_count >= max_failures:
                     if verbose:
-                        console.print(f"  Stopping: no improvement for {no_improve_count} steps")
+                        console.print(
+                            f"  Stopping: no improvement for "
+                            f"{no_improve_count} steps"
+                        )
                     break
 
     reduction = initial_crossings - current_crossings
-    reduction_pct = (reduction / initial_crossings * 100) if initial_crossings > 0 else 0
+    reduction_pct = (
+        (reduction / initial_crossings * 100)
+        if initial_crossings > 0 else 0
+    )
+    final_cv, boundary_details = compute_boundary_density_cv(
+        h, zones_np, grid_w, grid_h
+    )
 
     return {
         'initial_crossings': initial_crossings,
@@ -527,6 +967,16 @@ def run_inference(
         'final_h': h,
         'history_length': len(history_buffer),
         'seeded_ops': len(seeded_ops),
+        # Uniformity + target metrics
+        'initial_cv': initial_cv,
+        'final_cv': final_cv,
+        'target_upper': target_upper,
+        'target_lower': target_lower,
+        'target_range_str': f"[{low*100:.0f}%, {high*100:.0f}%]",
+        'in_target_range': target_lower <= current_crossings <= target_upper,
+        'phase_at_stop': phase,
+        'redistribution_steps': redistribution_steps,
+        'cv_threshold': cv_threshold,
     }
 
 
@@ -576,15 +1026,19 @@ def evaluate_all_patterns(
     device=torch.device('cuda'),
     visualize=False,
     vis_dir='nn_checkpoints/fusion/vis',
+    use_lookahead=True,
+    uniformity_lambda=0.3,
 ):
     console.print(Panel.fit(
-        "[bold cyan]FusionNet v2 (CNN+RNN+FiLM) - All Zone Patterns Evaluation[/bold cyan]\n"
+        "[bold cyan]FusionNet v3 (CNN+RNN+FiLM) - Target-Aware Inference Evaluation[/bold cyan]\n"
         f"Data: {jsonl_path}\n"
         f"Patterns: {', '.join(ALL_PATTERNS)}\n"
         f"Samples per pattern: {n_per_pattern}\n"
         f"Max steps: {max_steps} | Max history: {max_history}\n"
         f"Per-hyp top-k: {top_k_per_hyp} | Actions top-k: {top_k_act}\n"
-        f"Explore prob: {explore_prob}",
+        f"Explore prob: {explore_prob} | Lookahead: {use_lookahead}\n"
+        f"Uniformity lambda: {uniformity_lambda}\n"
+        f"Target ranges: {dict(TARGET_RANGES)}",
         border_style="cyan"
     ))
 
@@ -655,6 +1109,8 @@ def evaluate_all_patterns(
                 top_k_act=top_k_act,
                 explore_prob=explore_prob,
                 device=device,
+                use_lookahead=use_lookahead,
+                uniformity_lambda=uniformity_lambda,
             )
 
             # SA baseline
@@ -697,8 +1153,12 @@ def evaluate_all_patterns(
                             dpi=200, bbox_inches='tight')
                 plt.close(fig)
 
-            status = (f"{pattern} | red={result['reduction']}/{result['sa_reduction']} | "
-                      f"ops={result['num_operations']} | seed={result['seeded_ops']}")
+            in_target = "Y" if result.get('in_target_range') else "N"
+            status = (
+                f"{pattern} | red={result['reduction']}/{result['sa_reduction']} "
+                f"| CV={result.get('final_cv', 0):.2f} "
+                f"| target={in_target} | ops={result['num_operations']}"
+            )
             progress.update(task, advance=1, status=status)
 
     _display_all_pattern_results(all_results)
@@ -715,46 +1175,54 @@ def _display_all_pattern_results(results):
         pattern_results[r['zone_pattern']].append(r)
 
     per_pattern = Table(
-        title="[bold]Per-Pattern Results: FusionNet v2 vs SA Baseline[/bold]",
+        title="[bold]Per-Pattern Results: FusionNet v3 vs SA Baseline[/bold]",
         box=box.ROUNDED
     )
     per_pattern.add_column("Pattern", style="cyan")
     per_pattern.add_column("N", justify="right", style="dim")
-    per_pattern.add_column("Zones", justify="right")
     per_pattern.add_column("Grid", justify="center")
-    per_pattern.add_column("Fusion Avg Red", justify="right", style="green")
-    per_pattern.add_column("SA Avg Red", justify="right", style="yellow")
-    per_pattern.add_column("Fusion Ops", justify="right")
-    per_pattern.add_column("SA Eff Ops", justify="right")
+    per_pattern.add_column("Fusion Red", justify="right", style="green")
+    per_pattern.add_column("SA Red", justify="right", style="yellow")
+    per_pattern.add_column("Ops", justify="right")
+    per_pattern.add_column("Avg CV", justify="right")
+    per_pattern.add_column("In Target", justify="right")
     per_pattern.add_column(">= SA", justify="right")
     per_pattern.add_column("Red > 0", justify="right")
 
     for pattern in ALL_PATTERNS:
         pr = pattern_results.get(pattern, [])
         if not pr:
-            per_pattern.add_row(pattern, "0", "-", "-", "-", "-", "-", "-", "-", "-")
+            per_pattern.add_row(
+                pattern, "0", "-", "-", "-", "-", "-", "-", "-", "-"
+            )
             continue
 
         n = len(pr)
-        avg_zones = np.mean([r['n_zones'] for r in pr])
         grid_sizes = set(r['grid_size'] for r in pr)
         grid_str = ', '.join(sorted(grid_sizes))
 
         fusion_reds = [r['reduction'] for r in pr]
         fusion_pcts = [r['reduction_pct'] for r in pr]
         sa_reds = [r['sa_reduction'] for r in pr]
-        sa_pcts = [r['sa_reduction_pct'] for r in pr]
         fusion_ops = [r['num_operations'] for r in pr]
-        sa_eff = [r['sa_effective_ops'] for r in pr]
+        final_cvs = [r.get('final_cv', 0) for r in pr]
+        in_target = sum(1 for r in pr if r.get('in_target_range', False))
 
         wins = sum(1 for r in pr if r['reduction'] >= r['sa_reduction'])
         nonzero = sum(1 for r in fusion_reds if r > 0)
 
+        target_range = TARGET_RANGES.get(pattern, (0.1, 0.4))
+        cv_thresh = CV_THRESHOLDS.get(pattern, 0.5)
+        avg_cv = np.mean(final_cvs)
+        cv_style = "green" if avg_cv < cv_thresh else "yellow"
+
         per_pattern.add_row(
-            pattern, str(n), f"{avg_zones:.0f}", grid_str,
+            pattern, str(n), grid_str,
             f"{np.mean(fusion_reds):.1f} ({np.mean(fusion_pcts):.1f}%)",
-            f"{np.mean(sa_reds):.1f} ({np.mean(sa_pcts):.1f}%)",
-            f"{np.mean(fusion_ops):.1f}", f"{np.mean(sa_eff):.1f}",
+            f"{np.mean(sa_reds):.1f}",
+            f"{np.mean(fusion_ops):.1f}",
+            f"[{cv_style}]{avg_cv:.2f}[/{cv_style}]",
+            f"{in_target}/{n} ({in_target/n*100:.0f}%)",
             f"{wins}/{n} ({wins/n*100:.0f}%)",
             f"{nonzero}/{n} ({nonzero/n*100:.0f}%)",
         )
@@ -770,9 +1238,9 @@ def _display_all_pattern_results(results):
     sa_ops = [r.get('sa_ops', 0) for r in results]
     sa_eff_ops = [r.get('sa_effective_ops', 0) for r in results]
 
-    summary = Table(title="[bold]Overall: FusionNet v2 vs SA Baseline[/bold]", box=box.ROUNDED)
+    summary = Table(title="[bold]Overall: FusionNet v3 vs SA Baseline[/bold]", box=box.ROUNDED)
     summary.add_column("Metric", style="cyan")
-    summary.add_column("FusionNet v2", style="green", justify="right")
+    summary.add_column("FusionNet v3", style="green", justify="right")
     summary.add_column("SA Baseline", style="yellow", justify="right")
 
     summary.add_row(
@@ -786,11 +1254,6 @@ def _display_all_pattern_results(results):
         f"{np.median(sa_reductions):.1f} ({np.median(sa_reduction_pcts):.1f}%)",
     )
     summary.add_row(
-        "Max crossing reduction",
-        f"{max(reductions):.0f} ({max(reduction_pcts):.1f}%)",
-        f"{max(sa_reductions):.0f} ({max(sa_reduction_pcts):.1f}%)",
-    )
-    summary.add_row(
         "Avg operations used",
         f"{np.mean(ops):.1f}",
         f"{np.mean(sa_ops):.0f} total / {np.mean(sa_eff_ops):.1f} effective",
@@ -802,13 +1265,22 @@ def _display_all_pattern_results(results):
 
     summary.add_row("FusionNet >= SA", f"{wins}/{len(results)} ({wins/len(results)*100:.0f}%)", "")
     summary.add_row("Within 2 of SA", f"{close}/{len(results)} ({close/len(results)*100:.0f}%)", "")
-    summary.add_row("Samples with reduction > 0", f"{nonzero}/{len(results)} ({nonzero/len(results)*100:.0f}%)", "")
+    summary.add_row("Reduction > 0", f"{nonzero}/{len(results)} ({nonzero/len(results)*100:.0f}%)", "")
+
+    # Uniformity metrics
+    all_cvs = [r.get('final_cv', 0) for r in results]
+    in_target_count = sum(1 for r in results if r.get('in_target_range', False))
+    summary.add_row("Avg final CV", f"{np.mean(all_cvs):.3f}", "")
+    summary.add_row(
+        "In target range",
+        f"{in_target_count}/{len(results)} ({in_target_count/len(results)*100:.0f}%)",
+        "",
+    )
 
     if np.mean(ops) > 0 and np.mean(sa_ops) > 0:
         summary.add_row(
-            "Efficiency (reduction/op)",
+            "Efficiency (red/op)",
             f"{np.mean(reductions)/max(np.mean(ops), 0.01):.2f}",
-            f"{np.mean(sa_reductions)/max(np.mean(sa_ops), 0.01):.4f} total / "
             f"{np.mean(sa_reductions)/max(np.mean(sa_eff_ops), 0.01):.2f} effective",
         )
 
@@ -822,21 +1294,30 @@ def _display_all_pattern_results(results):
             continue
 
         n_show = min(15, len(pr))
-        detail = Table(title=f"[bold]{pattern}[/bold] — Per-Sample Results (first {n_show})", box=box.SIMPLE)
+        target_str = f"{TARGET_RANGES.get(pattern, (0.1,0.4))}"
+        detail = Table(
+            title=f"[bold]{pattern}[/bold] — Per-Sample (first {n_show}) | target={target_str}",
+            box=box.SIMPLE
+        )
         detail.add_column("#", style="dim")
         detail.add_column("Grid")
-        detail.add_column("Zones", justify="right")
-        detail.add_column("Initial", justify="right")
-        detail.add_column("Fusion Final", justify="right")
-        detail.add_column("Fusion Red%", justify="right")
-        detail.add_column("SA Final", justify="right")
+        detail.add_column("Init", justify="right")
+        detail.add_column("Final", justify="right")
+        detail.add_column("Red%", justify="right")
         detail.add_column("SA Red%", justify="right")
-        detail.add_column("Fusion Ops", justify="right")
-        detail.add_column("Seed", justify="right")
-        detail.add_column("Hist", justify="right")
+        detail.add_column("Ops", justify="right")
+        detail.add_column("CV", justify="right")
+        detail.add_column("Target", justify="center")
+        detail.add_column("Phase", justify="center")
 
         for i, r in enumerate(pr[:n_show]):
-            if r['reduction'] >= r.get('sa_reduction', float('inf')):
+            in_tgt = r.get('in_target_range', False)
+            cv_val = r.get('final_cv', 0)
+            cv_thresh = r.get('cv_threshold', 0.5)
+
+            if in_tgt and cv_val < cv_thresh:
+                style = "bold green"
+            elif r['reduction'] >= r.get('sa_reduction', float('inf')):
                 style = "green"
             elif r['reduction'] > 0:
                 style = "yellow"
@@ -844,27 +1325,30 @@ def _display_all_pattern_results(results):
                 style = "red"
 
             detail.add_row(
-                str(i + 1), r.get('grid_size', '?'), str(r.get('n_zones', '?')),
+                str(i + 1), r.get('grid_size', '?'),
                 str(r['initial_crossings']), str(r['final_crossings']),
-                f"{r['reduction_pct']:.1f}%", str(r.get('sa_final', '?')),
+                f"{r['reduction_pct']:.1f}%",
                 f"{r.get('sa_reduction_pct', 0):.1f}%",
-                str(r['num_operations']), str(r.get('seeded_ops', 0)),
-                str(r['history_length']),
+                str(r['num_operations']),
+                f"{cv_val:.2f}",
+                "[green]Y[/green]" if in_tgt else "[red]N[/red]",
+                r.get('phase_at_stop', '?'),
                 style=style,
             )
 
         console.print(detail)
 
     console.print(Panel.fit(
-        f"[bold]Final Summary[/bold]\n"
+        f"[bold]Final Summary — FusionNet v3[/bold]\n"
         f"Patterns tested: {', '.join(ALL_PATTERNS)}\n"
         f"Total samples: {len(results)}\n"
         f"Avg initial crossings: {np.mean([r['initial_crossings'] for r in results]):.1f}\n"
-        f"Avg final crossings (FusionNet v2): {np.mean([r['final_crossings'] for r in results]):.1f}\n"
+        f"Avg final crossings (Fusion): {np.mean([r['final_crossings'] for r in results]):.1f}\n"
         f"Avg final crossings (SA): {np.mean([r['sa_final'] for r in results]):.1f}\n"
-        f"Avg operations (FusionNet v2): {np.mean(ops):.1f}\n"
-        f"Avg crossing reduction: {np.mean(reduction_pcts):.1f}% "
-        f"vs SA: {np.mean(sa_reduction_pcts):.1f}%",
+        f"Avg operations: {np.mean(ops):.1f}\n"
+        f"Avg reduction: {np.mean(reduction_pcts):.1f}% vs SA: {np.mean(sa_reduction_pcts):.1f}%\n"
+        f"Avg final CV: {np.mean(all_cvs):.3f}\n"
+        f"In target range: {in_target_count}/{len(results)} ({in_target_count/len(results)*100:.0f}%)",
         border_style="cyan"
     ))
 
@@ -874,9 +1358,9 @@ def _display_all_pattern_results(results):
 # ---------------------------------------------------------------------------
 
 def main():
-    parser = argparse.ArgumentParser(description='FusionNet v2 Inference & Evaluation')
-    parser.add_argument('--checkpoint', default='nn_checkpoints/fusion/best.pt')
-    parser.add_argument('--jsonl', default='combined_dataset.jsonl')
+    parser = argparse.ArgumentParser(description='FusionNet v3 Inference & Evaluation')
+    parser.add_argument('--checkpoint', default='FusionModel/nn_checkpoints/fusion/best.pt')
+    parser.add_argument('--jsonl', default='datasets/final_dataset.jsonl')
     parser.add_argument('--n_per_pattern', type=int, default=25)
     parser.add_argument('--max_steps', type=int, default=150)
     parser.add_argument('--top_k_per_hyp', type=int, default=8)
@@ -886,17 +1370,23 @@ def main():
     parser.add_argument('--verbose', action='store_true')
     parser.add_argument('--visualize', action='store_true')
     parser.add_argument('--vis_dir', default='nn_checkpoints/fusion/vis')
+    parser.add_argument('--no_lookahead', action='store_true',
+                        help='Disable k-step lookahead (use greedy fallback)')
+    parser.add_argument('--uniformity_lambda', type=float, default=0.3,
+                        help='Weight for uniformity improvement in scoring')
 
     args = parser.parse_args()
     device = torch.device(args.device if torch.cuda.is_available() else 'cpu')
 
-    console.print(f"\n[bold]Loading FusionNet v2 from {args.checkpoint}...[/bold]")
+    console.print(f"\n[bold]Loading FusionNet v3 from {args.checkpoint}...[/bold]")
     model, model_args = load_model(args.checkpoint, device)
     n_params = sum(p.numel() for p in model.parameters())
     max_history = model_args.get('max_history', MAX_HISTORY)
     console.print(f"  Parameters: {n_params:,}")
     console.print(f"  Max history: {max_history}")
     console.print(f"  Device: {device}")
+    console.print(f"  Lookahead: {not args.no_lookahead}")
+    console.print(f"  Uniformity lambda: {args.uniformity_lambda}")
 
     results = evaluate_all_patterns(
         model=model,
@@ -910,15 +1400,18 @@ def main():
         device=device,
         visualize=args.visualize,
         vis_dir=args.vis_dir,
+        use_lookahead=not args.no_lookahead,
+        uniformity_lambda=args.uniformity_lambda,
     )
 
     if args.visualize:
         console.print(f"\n[bold]Visualizations saved to {args.vis_dir}/[/bold]")
 
     output_path = Path(args.checkpoint).parent / 'inference_results.json'
+    non_serializable = {'sequence', 'crossings_history', 'final_h', 'boundary_details'}
     serializable = []
     for r in results:
-        sr = {k: v for k, v in r.items() if k not in ('sequence', 'crossings_history', 'final_h')}
+        sr = {k: v for k, v in r.items() if k not in non_serializable}
         sr['crossings_history'] = r.get('crossings_history', [])
         sr['sequence'] = [
             {'kind': op['kind'], 'x': op['x'], 'y': op['y'], 'variant': op['variant']}

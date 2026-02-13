@@ -72,8 +72,8 @@ fi
 # --- Configuration ---
 # Override via environment variables:
 #   CHECKPOINT=/path/to/best.pt  TEST_JSONL=/path/to/test.jsonl  N_PER_PATTERN=25
-CHECKPOINT="${CHECKPOINT:-nn_checkpoints/fusion/best.pt}"
-TEST_JSONL="${TEST_JSONL:-combined_dataset.jsonl}"
+CHECKPOINT="${CHECKPOINT:-FusionModel/nn_checkpoints/fusion/best.pt}"
+TEST_JSONL="${TEST_JSONL:-datasets/final_dataset.jsonl}"
 N_PER_PATTERN="${N_PER_PATTERN:-25}"
 
 echo "Configuration:"

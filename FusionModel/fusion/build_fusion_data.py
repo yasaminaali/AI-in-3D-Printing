@@ -70,19 +70,13 @@ VARIANT_MAP = {
 # ---------------------------------------------------------------------------
 
 def _infer_init_pattern(zone_pattern, zone_grid, grid_w, grid_h):
-    """Infer the init_pattern that SA would have used for this trajectory."""
-    if zone_pattern in ('left_right', 'leftright', 'lr'):
-        return 'vertical_zigzag'
-    elif zone_pattern == 'stripes':
-        # Detect stripe direction from zone_grid
-        zones = np.array(zone_grid).reshape(grid_h, grid_w)
-        col0 = zones[:, 0]
-        if len(set(col0.tolist())) == 1:
-            # Column 0 is all same zone -> vertical stripes -> vertical_zigzag
-            return 'vertical_zigzag'
-        return 'zigzag'  # horizontal stripes
-    else:
-        return 'zigzag'  # voronoi, islands, etc.
+    """All existing dataset was generated with default zigzag (horizontal).
+
+    The SA code at the time of dataset generation used HamiltonianSTL(w, h)
+    without specifying init_pattern, which defaults to 'zigzag'. The 'auto'
+    logic was added later but the dataset was never regenerated.
+    """
+    return 'zigzag'
 
 
 def _compute_boundary_mask(zones, grid_w, grid_h):
