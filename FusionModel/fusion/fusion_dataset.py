@@ -272,7 +272,7 @@ def create_train_val_split(
     perturbation_prob: float = 0.0,
 ) -> Tuple['FusionDataset', 'FusionDataset']:
     """Load compact grouped .pt, keep at native resolution, split at trajectory level."""
-    data = torch.load(data_path, weights_only=False)
+    data = torch.load(data_path, weights_only=False, mmap=True)
 
     grid_groups = data['grid_groups']
     n_trajs_total = data['n_trajectories']

@@ -23,7 +23,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=32
 #SBATCH --gpus-per-node=h100:4
-#SBATCH --mem=128G
+#SBATCH --mem=0
 #SBATCH --time=12:00:00
 #SBATCH --account=aip-rnishat
 #SBATCH --qos=normal
