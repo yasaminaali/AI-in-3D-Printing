@@ -119,6 +119,7 @@ PYTHONPATH="$(pwd):$PYTHONPATH" torchrun \
     --batch_size "$BATCH_SIZE" \
     --learning_rate "$LR" \
     --patience "$PATIENCE" \
+    --num_workers 8 \
     $EXTRA_ARGS
 
 EXIT_CODE=$?
