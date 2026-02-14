@@ -19,15 +19,15 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=32
-#SBATCH --gpus-per-node=h100:4
-#SBATCH --mem=128G
-#SBATCH --time=02:00:00
+#SBATCH --gpus-per-node=h100:1
+#SBATCH --mem=64G
+#SBATCH --time=04:00:00
 #SBATCH --account=aip-rnishat
 #SBATCH --qos=normal
 #=============================================================
 
 echo "=============================================="
-echo "  FusionNet v3 — Proposal-Filter Inference Evaluation"
+echo "  FusionNet v3 — Proposal-Filter + SA Inference"
 echo "  Job ID:    $SLURM_JOB_ID"
 echo "  Node:      $SLURM_NODELIST"
 echo "  GPUs:      $CUDA_VISIBLE_DEVICES"

@@ -1,18 +1,12 @@
 """
 FusionNet v3 (CNN+RNN+FiLM) Inference for Hamiltonian Path Optimization.
 
-Proposal-filter inference: model proposes candidate positions, brute-force
-tries ALL 12 actions at each, keeps the best crossing-reducing operation.
-
-Key decisions:
-- Decision 1: Target crossing optimization (not minimize to zero)
-- Decision 2: Pattern-specific target ranges (left_right/stripes [20-40%],
-              islands [10-25%], voronoi [5-20%])
-- Decision 3: No history seeding (empty = FiLM identity = pure CNN first step)
-- Decision 5: Full trajectories in training (no truncation)
-- Decision 6: Two-phase inference (reduction + redistribution)
-- Decision 8: Init pattern = zigzag (matches training data)
-- Decision 9: Density-based uniformity via boundary CV
+Proposal-filter inference with SA-style acceptance:
+- Model proposes candidate positions + random boundary positions
+- Brute-force tries ALL 12 actions at each position
+- SA acceptance criterion (exp(-delta/T)) to escape local optima
+- Best-ever state tracking with restore at end
+- Two-phase: SA exploration then greedy redistribution for uniformity
 
 Usage:
     PYTHONPATH=$(pwd):$PYTHONPATH python FusionModel/fusion/inference_fusion.py \\
@@ -464,17 +458,21 @@ def run_inference(
     grid_w, grid_h,
     zone_pattern='unknown',
     max_history=32,
-    max_steps=150,
+    max_steps=300,
     n_candidates=50,
+    n_random=20,
     device=torch.device('cuda'),
     verbose=False,
 ):
     """
-    Proposal-filter inference:
-    1. Model proposes top-N candidate positions (proposal generator)
-    2. Try ALL 12 actions at each position (brute-force filter)
-    3. Keep the operation with the best crossing reduction
-    4. Two-phase: reduction then redistribution (Decisions 1, 2, 6, 9)
+    Proposal-filter inference with SA-style acceptance:
+    1. Model proposes candidate positions + random boundary positions
+    2. Try ALL 12 actions at each position (brute-force)
+    3. Pick best candidate (smallest delta, even if positive)
+    4. Accept with SA criterion: improvements always, worse moves with
+       probability exp(-delta/T) where T cools over time
+    5. Track best-ever state, restore at end
+    6. Greedy redistribution phase for uniformity after reaching target
     """
     # Decision 8: Correct init_pattern
     init_pattern = _infer_init_pattern(zone_pattern, zones_np, grid_w, grid_h)
@@ -487,6 +485,10 @@ def run_inference(
     valid_area[:grid_h, :grid_w] = 1.0
     dilated_mask = (dilated_mask * valid_area).to(device)
 
+    # Precompute boundary positions for random sampling
+    boundary_positions = dilated_mask.nonzero(as_tuple=False).cpu()
+    n_boundary = len(boundary_positions)
+
     history_buffer = deque(maxlen=max_history)
     sequence = []
     crossings_history = [initial_crossings]
@@ -497,63 +499,60 @@ def run_inference(
     target_lower = round(initial_crossings * (1.0 - high))
     cv_threshold = CV_THRESHOLDS.get(zone_pattern, 0.5)
 
-    # Decision 6 + 9: uniformity tracking
-    initial_cv, _ = compute_boundary_density_cv(h, zones_np, grid_w, grid_h)
-    current_cv = initial_cv
-    phase = 'reduction'
+    # SA temperature schedule (exponential decay)
+    T_max = max(initial_crossings * 0.15, 3.0)
+    T_min = 0.01
 
-    # Adaptive thresholds
-    max_failures = max(30, initial_crossings * 2)
-    max_steps_adaptive = max(max_steps, initial_crossings * 5)
-
-    no_improve_count = 0
-    total_attempts = 0
-    invalid_count = 0
-    redistribution_steps = 0
-    max_redistribution = 30
+    # Best-ever state tracking
+    best_crossings = initial_crossings
+    best_H = [row[:] for row in h.H]
+    best_V = [row[:] for row in h.V]
+    best_sequence = []
+    best_history_list = []
 
     all_variants = list(VARIANT_MAP.keys())
+    total_attempts = 0
+    invalid_count = 0
+    accepted_worse = 0
+    sa_steps = max(max_steps, initial_crossings * 3)
 
+    # ---- Phase 1: SA-style exploration ----
     model.eval()
     with torch.no_grad():
-        for step in range(max_steps_adaptive):
-            # --- Phase transition check ---
-            if current_crossings <= target_upper:
-                phase = 'redistribution'
-                if current_cv < cv_threshold:
-                    if verbose:
-                        console.print(
-                            f"  Step {step}: TARGET REACHED — "
-                            f"crossings={current_crossings} (<={target_upper}), "
-                            f"CV={current_cv:.3f} (<{cv_threshold})"
-                        )
-                    break
-                if redistribution_steps >= max_redistribution:
-                    if verbose:
-                        console.print(
-                            f"  Step {step}: redistribution limit — "
-                            f"CV={current_cv:.3f}"
-                        )
-                    break
+        for step in range(sa_steps):
+            # Early stop if past target lower bound
+            if best_crossings <= target_lower:
+                break
 
-            # --- Get candidate positions from model ---
+            # Temperature: exponential decay
+            progress = step / max(sa_steps - 1, 1)
+            T = T_max * (T_min / T_max) ** progress
+
+            # Get model-proposed positions
             positions = _get_candidate_positions(
                 model, h, zones_np, boundary_mask, grid_w, grid_h,
                 initial_crossings, history_buffer, dilated_mask, device,
                 max_history=max_history, n_positions=n_candidates,
             )
 
+            # Add random boundary positions for exploration
+            if n_boundary > 0 and n_random > 0:
+                n_rand = min(n_random, n_boundary)
+                rand_idx = torch.randperm(n_boundary)[:n_rand]
+                for idx in rand_idx:
+                    py = boundary_positions[idx, 0].item()
+                    px = boundary_positions[idx, 1].item()
+                    positions.append((py, px, 0.0))
+
             if not positions:
-                if verbose:
-                    console.print(f"  Step {step}: no candidate positions")
                 break
 
-            # --- Save state once, try ALL actions at each position ---
+            # Save state once, try ALL actions at each position
             saved_H = [row[:] for row in h.H]
             saved_V = [row[:] for row in h.V]
 
-            best_result = None   # (new_crossings, new_cv, op_type, px, py, variant)
-            best_score = float('-inf')
+            best_delta = float('inf')
+            best_op = None
 
             for py, px, confidence in positions:
                 for variant in all_variants:
@@ -564,7 +563,6 @@ def run_inference(
 
                     total_attempts += 1
 
-                    # Restore to saved state before each attempt
                     h.H = [row[:] for row in saved_H]
                     h.V = [row[:] for row in saved_V]
 
@@ -574,45 +572,30 @@ def run_inference(
                         continue
 
                     new_crossings = compute_crossings(h, zones_np)
+                    delta = new_crossings - current_crossings
 
-                    if phase == 'reduction':
-                        if new_crossings < current_crossings:
-                            score = current_crossings - new_crossings
-                            if score > best_score:
-                                best_score = score
-                                best_result = (new_crossings, None,
-                                               op_type, px, py, variant)
-                    else:
-                        # Redistribution: accept if crossings don't increase
-                        # and either crossings decrease or uniformity improves
-                        if new_crossings <= current_crossings:
-                            new_cv, _ = compute_boundary_density_cv(
-                                h, zones_np, grid_w, grid_h
-                            )
-                            reduction = current_crossings - new_crossings
-                            cv_gain = max(0.0, current_cv - new_cv)
-                            score = (reduction
-                                     + 0.5 * cv_gain * current_crossings)
-                            if (score > best_score
-                                    and (new_crossings < current_crossings
-                                         or new_cv < current_cv)):
-                                best_score = score
-                                best_result = (new_crossings, new_cv,
-                                               op_type, px, py, variant)
+                    if delta < best_delta:
+                        best_delta = delta
+                        best_op = (new_crossings, op_type, px, py, variant)
 
-            # --- Restore and apply best result ---
+            # Restore state
             h.H = [row[:] for row in saved_H]
             h.V = [row[:] for row in saved_V]
 
-            if best_result is not None:
-                new_crossings, new_cv, op_type, px, py, variant = best_result
-                apply_op(h, op_type, px, py, variant)
+            if best_op is None:
+                continue
 
-                if new_cv is None:
-                    new_cv, _ = compute_boundary_density_cv(
-                        h, zones_np, grid_w, grid_h
-                    )
-                current_cv = new_cv
+            new_crossings, op_type, px, py, variant = best_op
+            delta = new_crossings - current_crossings
+
+            # SA acceptance criterion
+            if delta <= 0:
+                accept = True
+            else:
+                accept = (np.random.random() < np.exp(-delta / max(T, 1e-10)))
+
+            if accept:
+                apply_op(h, op_type, px, py, variant)
 
                 sequence.append({
                     'kind': op_type, 'x': px, 'y': py,
@@ -629,35 +612,118 @@ def run_inference(
                 })
                 current_crossings = new_crossings
                 crossings_history.append(current_crossings)
-                no_improve_count = 0
-                if phase == 'redistribution':
-                    redistribution_steps += 1
 
-                if verbose:
+                if delta > 0:
+                    accepted_worse += 1
+
+                # Track best-ever state
+                if current_crossings < best_crossings:
+                    best_crossings = current_crossings
+                    best_H = [row[:] for row in h.H]
+                    best_V = [row[:] for row in h.V]
+                    best_sequence = [op.copy() for op in sequence]
+                    best_history_list = list(history_buffer)
+
+                if verbose and step % 50 == 0:
                     console.print(
-                        f"  Step {step+1} [{phase}]: "
+                        f"  Step {step+1} [SA T={T:.2f}]: "
                         f"{op_type}({variant}) at ({px},{py}) "
-                        f"-> crossings {current_crossings}, "
-                        f"CV={current_cv:.3f}"
+                        f"delta={delta:+d} -> crossings={current_crossings} "
+                        f"(best={best_crossings})"
                     )
-            else:
-                no_improve_count += 1
-                if no_improve_count >= max_failures:
-                    if verbose:
-                        console.print(
-                            f"  Stopping: no improvement for "
-                            f"{no_improve_count} steps"
-                        )
+
+    # Restore best-ever state from SA phase
+    h.H = best_H
+    h.V = best_V
+    current_crossings = best_crossings
+    sequence = best_sequence
+    history_buffer = deque(best_history_list, maxlen=max_history)
+
+    # ---- Phase 2: Greedy redistribution ----
+    redistribution_steps = 0
+    max_redistribution = 30
+    phase = 'reduction'
+
+    initial_cv, _ = compute_boundary_density_cv(h, zones_np, grid_w, grid_h)
+    current_cv = initial_cv
+
+    if current_crossings <= target_upper:
+        phase = 'redistribution'
+        with torch.no_grad():
+            for rstep in range(max_redistribution):
+                if current_cv < cv_threshold:
                     break
 
+                positions = _get_candidate_positions(
+                    model, h, zones_np, boundary_mask, grid_w, grid_h,
+                    initial_crossings, history_buffer, dilated_mask, device,
+                    max_history=max_history, n_positions=n_candidates,
+                )
+                if not positions:
+                    break
+
+                saved_H = [row[:] for row in h.H]
+                saved_V = [row[:] for row in h.V]
+
+                best_result = None
+                best_score = float('-inf')
+
+                for py, px, confidence in positions:
+                    for variant in all_variants:
+                        op_type = 'T' if variant in TRANSPOSE_VARIANTS else 'F'
+                        if not validate_action(op_type, px, py, variant,
+                                               grid_w, grid_h):
+                            continue
+
+                        h.H = [row[:] for row in saved_H]
+                        h.V = [row[:] for row in saved_V]
+
+                        success = apply_op(h, op_type, px, py, variant)
+                        if not success:
+                            continue
+
+                        new_crossings = compute_crossings(h, zones_np)
+                        if new_crossings <= current_crossings:
+                            new_cv, _ = compute_boundary_density_cv(
+                                h, zones_np, grid_w, grid_h
+                            )
+                            reduction = current_crossings - new_crossings
+                            cv_gain = max(0.0, current_cv - new_cv)
+                            score = (reduction
+                                     + 0.5 * cv_gain * current_crossings)
+                            if (score > best_score
+                                    and (new_crossings < current_crossings
+                                         or new_cv < current_cv)):
+                                best_score = score
+                                best_result = (new_crossings, new_cv,
+                                               op_type, px, py, variant)
+
+                h.H = [row[:] for row in saved_H]
+                h.V = [row[:] for row in saved_V]
+
+                if best_result is not None:
+                    nc, ncv, ot, px2, py2, var2 = best_result
+                    apply_op(h, ot, px2, py2, var2)
+                    current_cv = ncv
+                    current_crossings = nc
+                    crossings_history.append(current_crossings)
+                    redistribution_steps += 1
+                    sequence.append({
+                        'kind': ot, 'x': px2, 'y': py2,
+                        'variant': var2,
+                        'crossings_before': current_crossings,
+                        'crossings_after': nc,
+                    })
+                else:
+                    break
+
+    # Final metrics
     reduction = initial_crossings - current_crossings
     reduction_pct = (
         (reduction / initial_crossings * 100)
         if initial_crossings > 0 else 0
     )
-    final_cv, boundary_details = compute_boundary_density_cv(
-        h, zones_np, grid_w, grid_h
-    )
+    final_cv, _ = compute_boundary_density_cv(h, zones_np, grid_w, grid_h)
 
     return {
         'initial_crossings': initial_crossings,
@@ -681,6 +747,7 @@ def run_inference(
         'phase_at_stop': phase,
         'redistribution_steps': redistribution_steps,
         'cv_threshold': cv_threshold,
+        'accepted_worse': accepted_worse,
     }
 
 
@@ -722,21 +789,23 @@ def evaluate_all_patterns(
     model,
     jsonl_path,
     n_per_pattern=25,
-    max_steps=150,
+    max_steps=300,
     max_history=32,
     n_candidates=50,
+    n_random=20,
     device=torch.device('cuda'),
     visualize=False,
     vis_dir='nn_checkpoints/fusion/vis',
 ):
     console.print(Panel.fit(
-        "[bold cyan]FusionNet v3 — Proposal-Filter Inference Evaluation[/bold cyan]\n"
+        "[bold cyan]FusionNet v3 — Proposal-Filter + SA Inference[/bold cyan]\n"
         f"Data: {jsonl_path}\n"
         f"Patterns: {', '.join(ALL_PATTERNS)}\n"
         f"Samples per pattern: {n_per_pattern}\n"
-        f"Max steps: {max_steps} | Max history: {max_history}\n"
-        f"Candidate positions per step: {n_candidates}\n"
+        f"Max SA steps: {max_steps} | Max history: {max_history}\n"
+        f"Model candidates: {n_candidates} + random: {n_random} per step\n"
         f"Actions tried per position: 12 (all)\n"
+        f"SA acceptance: exp(-delta/T) with cooling\n"
         f"Target ranges: {dict(TARGET_RANGES)}",
         border_style="cyan"
     ))
@@ -805,6 +874,7 @@ def evaluate_all_patterns(
                 max_history=max_history,
                 max_steps=max_steps,
                 n_candidates=n_candidates,
+                n_random=n_random,
                 device=device,
             )
 
@@ -1057,9 +1127,12 @@ def main():
     parser.add_argument('--checkpoint', default='FusionModel/nn_checkpoints/fusion/best.pt')
     parser.add_argument('--jsonl', default='datasets/final_dataset.jsonl')
     parser.add_argument('--n_per_pattern', type=int, default=25)
-    parser.add_argument('--max_steps', type=int, default=150)
+    parser.add_argument('--max_steps', type=int, default=300,
+                        help='Max SA steps per sample (adaptive: max(this, 3*crossings))')
     parser.add_argument('--n_candidates', type=int, default=50,
-                        help='Number of candidate positions per step (model proposals)')
+                        help='Model-proposed candidate positions per step')
+    parser.add_argument('--n_random', type=int, default=20,
+                        help='Random boundary positions per step (exploration)')
     parser.add_argument('--device', default='cuda')
     parser.add_argument('--verbose', action='store_true')
     parser.add_argument('--visualize', action='store_true')
@@ -1075,8 +1148,9 @@ def main():
     console.print(f"  Parameters: {n_params:,}")
     console.print(f"  Max history: {max_history}")
     console.print(f"  Device: {device}")
-    console.print(f"  Candidate positions: {args.n_candidates}")
+    console.print(f"  Model candidates: {args.n_candidates} + random: {args.n_random}")
     console.print(f"  Actions per position: 12 (brute-force)")
+    console.print(f"  SA steps: {args.max_steps} (adaptive)")
 
     results = evaluate_all_patterns(
         model=model,
@@ -1085,6 +1159,7 @@ def main():
         max_steps=args.max_steps,
         max_history=max_history,
         n_candidates=args.n_candidates,
+        n_random=args.n_random,
         device=device,
         visualize=args.visualize,
         vis_dir=args.vis_dir,
