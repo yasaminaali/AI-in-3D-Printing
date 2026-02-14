@@ -27,7 +27,7 @@
 #=============================================================
 
 echo "=============================================="
-echo "  FusionNet v2 — Inference Evaluation"
+echo "  FusionNet v3 — Proposal-Filter Inference Evaluation"
 echo "  Job ID:    $SLURM_JOB_ID"
 echo "  Node:      $SLURM_NODELIST"
 echo "  GPUs:      $CUDA_VISIBLE_DEVICES"
