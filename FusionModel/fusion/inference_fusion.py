@@ -460,13 +460,13 @@ def run_inference(
     max_history=32,
     max_steps=300,
     n_candidates=50,
-    n_random=20,
+    n_random=50,
     device=torch.device('cuda'),
     verbose=False,
 ):
     """
     Proposal-filter inference with SA-style acceptance:
-    1. Model proposes candidate positions + random boundary positions
+    1. Model proposes candidate positions + random grid positions
     2. Try ALL 12 actions at each position (brute-force)
     3. Pick best candidate (smallest delta, even if positive)
     4. Accept with SA criterion: improvements always, worse moves with
@@ -484,10 +484,6 @@ def run_inference(
     valid_area = torch.zeros(MAX_GRID_SIZE, MAX_GRID_SIZE)
     valid_area[:grid_h, :grid_w] = 1.0
     dilated_mask = (dilated_mask * valid_area).to(device)
-
-    # Precompute boundary positions for random sampling
-    boundary_positions = dilated_mask.nonzero(as_tuple=False).cpu()
-    n_boundary = len(boundary_positions)
 
     history_buffer = deque(maxlen=max_history)
     sequence = []
@@ -514,7 +510,7 @@ def run_inference(
     total_attempts = 0
     invalid_count = 0
     accepted_worse = 0
-    sa_steps = max(max_steps, initial_crossings * 3)
+    sa_steps = max(max_steps, initial_crossings * 8)
 
     # ---- Phase 1: SA-style exploration ----
     model.eval()
@@ -535,13 +531,13 @@ def run_inference(
                 max_history=max_history, n_positions=n_candidates,
             )
 
-            # Add random boundary positions for exploration
-            if n_boundary > 0 and n_random > 0:
-                n_rand = min(n_random, n_boundary)
-                rand_idx = torch.randperm(n_boundary)[:n_rand]
-                for idx in rand_idx:
-                    py = boundary_positions[idx, 0].item()
-                    px = boundary_positions[idx, 1].item()
+            # Add random positions from the ENTIRE grid for exploration
+            # (not just boundary — path restructuring far from boundary
+            #  is needed to escape local optima in structured patterns)
+            if n_random > 0:
+                for _ in range(n_random):
+                    py = np.random.randint(0, grid_h)
+                    px = np.random.randint(0, grid_w)
                     positions.append((py, px, 0.0))
 
             if not positions:
@@ -792,7 +788,7 @@ def evaluate_all_patterns(
     max_steps=300,
     max_history=32,
     n_candidates=50,
-    n_random=20,
+    n_random=50,
     device=torch.device('cuda'),
     visualize=False,
     vis_dir='nn_checkpoints/fusion/vis',
@@ -1131,8 +1127,8 @@ def main():
                         help='Max SA steps per sample (adaptive: max(this, 3*crossings))')
     parser.add_argument('--n_candidates', type=int, default=50,
                         help='Model-proposed candidate positions per step')
-    parser.add_argument('--n_random', type=int, default=20,
-                        help='Random boundary positions per step (exploration)')
+    parser.add_argument('--n_random', type=int, default=50,
+                        help='Random grid positions per step (full-grid exploration)')
     parser.add_argument('--device', default='cuda')
     parser.add_argument('--verbose', action='store_true')
     parser.add_argument('--visualize', action='store_true')
