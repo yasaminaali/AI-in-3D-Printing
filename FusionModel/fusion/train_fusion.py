@@ -403,7 +403,8 @@ def train(args):
         n_batches = 0
 
         pbar = tqdm(train_loader, desc=f"Epoch {epoch}/{args.epochs}",
-                     leave=False, disable=not is_main_process())
+                     leave=True, disable=not is_main_process(),
+                     file=sys.stdout, mininterval=5.0)
         for batch in pbar:
             states = batch['state'].to(device)
             target_x = batch['target_x'].to(device)
@@ -449,7 +450,19 @@ def train(args):
             epoch_act_loss += act_loss.item()
             n_batches += 1
 
-            pbar.set_postfix(loss=f"{loss.item():.4f}")
+            avg_loss = epoch_loss / n_batches
+            pbar.set_postfix(loss=f"{loss.item():.4f}", avg=f"{avg_loss:.4f}",
+                             pos=f"{pos_loss.item():.3f}", act=f"{act_loss.item():.3f}")
+
+            # Mid-epoch log every 500 batches
+            if is_main_process() and n_batches % 500 == 0:
+                elapsed = time.time() - epoch_start
+                it_per_sec = n_batches / elapsed
+                print(f"  [{epoch}/{args.epochs}] batch {n_batches}/{len(train_loader)} | "
+                      f"loss={avg_loss:.4f} pos={epoch_pos_loss/n_batches:.3f} "
+                      f"act={epoch_act_loss/n_batches:.3f} | "
+                      f"{it_per_sec:.1f} it/s | {elapsed:.0f}s elapsed",
+                      flush=True)
 
         # ---- Validate ----
         val_metrics = validate(model, val_loader, device,
