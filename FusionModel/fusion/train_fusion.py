@@ -272,11 +272,15 @@ def train(args):
         shuffle=(train_sampler is None),
         sampler=train_sampler,
         num_workers=args.num_workers, pin_memory=True, drop_last=True,
+        persistent_workers=args.num_workers > 0,
+        prefetch_factor=4 if args.num_workers > 0 else None,
     )
     val_loader = DataLoader(
         val_ds, batch_size=args.batch_size, shuffle=False,
         sampler=val_sampler,
         num_workers=args.num_workers, pin_memory=True,
+        persistent_workers=args.num_workers > 0,
+        prefetch_factor=4 if args.num_workers > 0 else None,
     )
 
     # Create model
