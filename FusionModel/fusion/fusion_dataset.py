@@ -107,7 +107,7 @@ def augment_vflip(state_4ch, ty, tx, action, grid_h, grid_w):
 
 
 def build_9ch_state(state_4ch, grid_h, grid_w, initial_crossings):
-    """Build 9-channel 128x128 state from 4ch natural-resolution state (Change 5)."""
+    """Build 9-channel 128x128 state from 4ch (CPU, single-sample — used by inference)."""
     state = torch.zeros(9, MAX_GRID_SIZE, MAX_GRID_SIZE)
 
     # Ch 0-2: zones, H edges, V edges (pad from natural to 128)
@@ -148,6 +148,91 @@ def build_9ch_state(state_4ch, grid_h, grid_w, initial_crossings):
     return state
 
 
+@torch.no_grad()
+def build_9ch_batch_gpu(state_4ch, grid_h, grid_w, initial_crossings, boundary_dilation=1):
+    """
+    Build 9-channel states + boundary masks on GPU from batched 4ch states.
+
+    Replaces per-sample CPU build_9ch_state + dilate_boundary_mask with a single
+    batched GPU operation for ~4x training throughput.
+
+    Args:
+        state_4ch: [B, 4, 128, 128] float, zero-padded 4ch states on GPU
+        grid_h: [B] long, grid heights per sample
+        grid_w: [B] long, grid widths per sample
+        initial_crossings: [B] float, initial crossing counts
+        boundary_dilation: int, boundary mask dilation radius
+
+    Returns:
+        state_9ch: [B, 9, 128, 128] float on GPU
+        boundary_mask: [B, 128, 128] float on GPU
+    """
+    B = state_4ch.shape[0]
+    device = state_4ch.device
+    S = MAX_GRID_SIZE
+
+    state_9ch = torch.zeros(B, 9, S, S, device=device)
+
+    # Ch 0-2: zones, H edges, V edges (copy from padded 4ch)
+    state_9ch[:, :3] = state_4ch[:, :3]
+
+    # Ch 3: grid validity (boundary_combined >= 0.4 marks valid cells; padding is 0)
+    grid_validity = (state_4ch[:, 3] >= 0.4).float()
+    state_9ch[:, 3] = grid_validity
+
+    # Ch 4: zone boundary (boundary_combined > 0.9)
+    state_9ch[:, 4] = (state_4ch[:, 3] > 0.9).float()
+
+    # Ch 5: crossing count per cell, normalized by per-sample max
+    zones = state_4ch[:, 0]
+    h_edges = state_4ch[:, 1]
+    v_edges = state_4ch[:, 2]
+
+    h_zone_diff = (torch.abs(zones[:, :, :-1] - zones[:, :, 1:]) > 0.01)
+    h_edge_present = (h_edges[:, :, :-1] > 0.5)
+    h_crossing = (h_zone_diff & h_edge_present).float()
+
+    v_zone_diff = (torch.abs(zones[:, :-1, :] - zones[:, 1:, :]) > 0.01)
+    v_edge_present = (v_edges[:, :-1, :] > 0.5)
+    v_crossing = (v_zone_diff & v_edge_present).float()
+
+    crossing_count = torch.zeros(B, S, S, device=device)
+    crossing_count[:, :, :-1] += h_crossing
+    crossing_count[:, :, 1:] += h_crossing
+    crossing_count[:, :-1, :] += v_crossing
+    crossing_count[:, 1:, :] += v_crossing
+
+    max_cross = crossing_count.reshape(B, -1).max(dim=1).values.clamp(min=1.0)
+    state_9ch[:, 5] = crossing_count / max_cross.view(B, 1, 1)
+
+    # Ch 6: progress (current_crossings / initial_crossings), tiled over valid grid
+    current_crossings = crossing_count.reshape(B, -1).sum(dim=1) / 2.0
+    init_c = initial_crossings.float().clamp(min=1.0)
+    progress = (current_crossings / init_c).clamp(max=1.0)
+    state_9ch[:, 6] = progress.view(B, 1, 1) * grid_validity
+
+    # Ch 7: y_coord (0->1 over grid height)
+    y_base = torch.arange(S, device=device, dtype=torch.float32).view(1, S, 1)
+    y_norm = y_base / (grid_h.float().view(B, 1, 1) - 1).clamp(min=1)
+    state_9ch[:, 7] = y_norm.clamp(max=1.0) * grid_validity
+
+    # Ch 8: x_coord (0->1 over grid width)
+    x_base = torch.arange(S, device=device, dtype=torch.float32).view(1, 1, S)
+    x_norm = x_base / (grid_w.float().view(B, 1, 1) - 1).clamp(min=1)
+    state_9ch[:, 8] = x_norm.clamp(max=1.0) * grid_validity
+
+    # Boundary mask with dilation
+    boundary = state_9ch[:, 4:5]  # [B, 1, S, S]
+    if boundary_dilation > 0:
+        ks = 2 * boundary_dilation + 1
+        dilated = F.max_pool2d(boundary, kernel_size=ks, stride=1, padding=boundary_dilation)
+    else:
+        dilated = boundary
+    boundary_mask = dilated.squeeze(1) * grid_validity
+
+    return state_9ch, boundary_mask
+
+
 class FusionDataset(Dataset):
     """
     Memory-efficient dataset: stores states at native resolution per group.
@@ -168,7 +253,7 @@ class FusionDataset(Dataset):
                  group_hist_ca: List[torch.Tensor],
                  group_hist_lengths: List[torch.Tensor],
                  max_history: int,
-                 boundary_dilation=1, augment=False, perturbation_prob=0.0):
+                 augment=False, perturbation_prob=0.0):
         self.group_states = group_states
         self.group_targets = group_targets
         self.group_traj_ids = group_traj_ids
@@ -182,7 +267,6 @@ class FusionDataset(Dataset):
         self.group_hist_ca = group_hist_ca
         self.group_hist_lengths = group_hist_lengths
         self.max_history = max_history
-        self.boundary_dilation = boundary_dilation
         self.augment = augment
         self.perturbation_prob = perturbation_prob
 
@@ -231,29 +315,30 @@ class FusionDataset(Dataset):
                     hist_py[:hist_len] = (grid_h - 1 - hist_py[:hist_len]).clamp(0, grid_h - 1)
                     hist_act[:hist_len] = VFLIP_ACTION[hist_act[:hist_len]]
 
-        # --- Build 9ch state from augmented 4ch (Change 5) ---
-        state_9ch = build_9ch_state(state_4ch, grid_h, grid_w, init_cross)
-
-        # --- Boundary mask ---
-        boundary_mask = dilate_boundary_mask(
-            state_4ch[3], grid_h, grid_w, dilation=self.boundary_dilation
-        )
+        # --- Pad 4ch to 128x128 (GPU builds 9ch + boundary mask) ---
+        padded = torch.zeros(4, MAX_GRID_SIZE, MAX_GRID_SIZE)
+        padded[0, :grid_h, :grid_w] = state_4ch[0, :grid_h, :grid_w]
+        padded[1, :grid_h, :grid_w - 1] = state_4ch[1, :grid_h, :grid_w - 1]
+        padded[2, :grid_h - 1, :grid_w] = state_4ch[2, :grid_h - 1, :grid_w]
+        padded[3, :grid_h, :grid_w] = state_4ch[3, :grid_h, :grid_w]
 
         # --- History mask ---
         hist_mask = torch.zeros(self.max_history)
         hist_mask[:hist_len] = 1.0
 
-        # --- Change 7: Normalize crossings by initial_crossings ---
+        # --- Normalize crossings by initial_crossings ---
         norm_factor = max(init_cross, 1.0)
         hist_cb_norm = hist_cb / norm_factor
         hist_ca_norm = hist_ca / norm_factor
 
         return {
-            'state': state_9ch,
+            'state_4ch': padded,
+            'grid_h': torch.tensor(grid_h, dtype=torch.long),
+            'grid_w': torch.tensor(grid_w, dtype=torch.long),
+            'initial_crossings': torch.tensor(init_cross, dtype=torch.float),
             'target_y': torch.tensor(ty, dtype=torch.long),
             'target_x': torch.tensor(tx, dtype=torch.long),
             'target_action': torch.tensor(action, dtype=torch.long),
-            'boundary_mask': boundary_mask,
             'history_actions': hist_act.long(),
             'history_positions_y': hist_py.long(),
             'history_positions_x': hist_px.long(),
@@ -266,7 +351,6 @@ class FusionDataset(Dataset):
 def create_train_val_split(
     data_path: str,
     val_ratio: float = 0.1,
-    boundary_dilation: int = 1,
     seed: int = 42,
     augment: bool = True,
     perturbation_prob: float = 0.0,
@@ -342,7 +426,6 @@ def create_train_val_split(
             group_hist_ca=groups['hist_ca'],
             group_hist_lengths=groups['hist_lengths'],
             max_history=max_history,
-            boundary_dilation=boundary_dilation,
             augment=aug,
             perturbation_prob=perturb_prob,
         )

@@ -33,7 +33,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from fusion_model import FusionNet, compute_loss, count_parameters
-from fusion_dataset import create_train_val_split
+from fusion_dataset import create_train_val_split, build_9ch_batch_gpu
 
 from rich.console import Console
 from rich.table import Table
@@ -109,7 +109,7 @@ def create_dashboard_str(epoch, epochs, metrics, best_metrics, lr, gpu_mem_used,
     return '\n'.join(lines)
 
 
-def validate(model, val_loader, device, pos_weight=5.0, diversity_weight=0.5, use_amp=True):
+def validate(model, val_loader, device, pos_weight=5.0, diversity_weight=0.5, use_amp=True, boundary_dilation=1):
     model.eval()
     total_loss = 0
     total_pos_loss = 0
@@ -126,17 +126,22 @@ def validate(model, val_loader, device, pos_weight=5.0, diversity_weight=0.5, us
 
     with torch.no_grad():
         for batch in val_loader:
-            states = batch['state'].to(device)
-            target_x = batch['target_x'].to(device)
-            target_y = batch['target_y'].to(device)
-            target_action = batch['target_action'].to(device)
-            boundary_masks = batch['boundary_mask'].to(device)
-            hist_act = batch['history_actions'].to(device)
-            hist_py = batch['history_positions_y'].to(device)
-            hist_px = batch['history_positions_x'].to(device)
-            hist_cb = batch['history_crossings_before'].to(device)
-            hist_ca = batch['history_crossings_after'].to(device)
-            hist_mask = batch['history_mask'].to(device)
+            state_4ch = batch['state_4ch'].to(device, non_blocking=True)
+            states, boundary_masks = build_9ch_batch_gpu(
+                state_4ch,
+                batch['grid_h'].to(device, non_blocking=True),
+                batch['grid_w'].to(device, non_blocking=True),
+                batch['initial_crossings'].to(device, non_blocking=True),
+                boundary_dilation=boundary_dilation)
+            target_x = batch['target_x'].to(device, non_blocking=True)
+            target_y = batch['target_y'].to(device, non_blocking=True)
+            target_action = batch['target_action'].to(device, non_blocking=True)
+            hist_act = batch['history_actions'].to(device, non_blocking=True)
+            hist_py = batch['history_positions_y'].to(device, non_blocking=True)
+            hist_px = batch['history_positions_x'].to(device, non_blocking=True)
+            hist_cb = batch['history_crossings_before'].to(device, non_blocking=True)
+            hist_ca = batch['history_crossings_after'].to(device, non_blocking=True)
+            hist_mask = batch['history_mask'].to(device, non_blocking=True)
 
             with torch.cuda.amp.autocast(dtype=torch.bfloat16, enabled=use_amp):
                 pos_logits, act_logits = model(
@@ -254,7 +259,6 @@ def train(args):
     train_ds, val_ds = create_train_val_split(
         args.data_path,
         val_ratio=args.val_split,
-        boundary_dilation=args.boundary_dilation,
         seed=42,
         augment=not args.no_augment,
     )
@@ -410,17 +414,23 @@ def train(args):
                      leave=True, disable=not is_main_process(),
                      file=sys.stdout, mininterval=5.0)
         for batch in pbar:
-            states = batch['state'].to(device)
-            target_x = batch['target_x'].to(device)
-            target_y = batch['target_y'].to(device)
-            target_action = batch['target_action'].to(device)
-            boundary_masks = batch['boundary_mask'].to(device)
-            hist_act = batch['history_actions'].to(device)
-            hist_py = batch['history_positions_y'].to(device)
-            hist_px = batch['history_positions_x'].to(device)
-            hist_cb = batch['history_crossings_before'].to(device)
-            hist_ca = batch['history_crossings_after'].to(device)
-            hist_mask = batch['history_mask'].to(device)
+            # GPU preprocessing: build 9ch + boundary mask from 4ch
+            state_4ch = batch['state_4ch'].to(device, non_blocking=True)
+            states, boundary_masks = build_9ch_batch_gpu(
+                state_4ch,
+                batch['grid_h'].to(device, non_blocking=True),
+                batch['grid_w'].to(device, non_blocking=True),
+                batch['initial_crossings'].to(device, non_blocking=True),
+                boundary_dilation=args.boundary_dilation)
+            target_x = batch['target_x'].to(device, non_blocking=True)
+            target_y = batch['target_y'].to(device, non_blocking=True)
+            target_action = batch['target_action'].to(device, non_blocking=True)
+            hist_act = batch['history_actions'].to(device, non_blocking=True)
+            hist_py = batch['history_positions_y'].to(device, non_blocking=True)
+            hist_px = batch['history_positions_x'].to(device, non_blocking=True)
+            hist_cb = batch['history_crossings_before'].to(device, non_blocking=True)
+            hist_ca = batch['history_crossings_after'].to(device, non_blocking=True)
+            hist_mask = batch['history_mask'].to(device, non_blocking=True)
 
             optimizer.zero_grad()
 
@@ -472,7 +482,8 @@ def train(args):
         val_metrics = validate(model, val_loader, device,
                                pos_weight=args.pos_weight,
                                diversity_weight=args.diversity_weight,
-                               use_amp=args.use_amp)
+                               use_amp=args.use_amp,
+                               boundary_dilation=args.boundary_dilation)
 
         epoch_time = time.time() - epoch_start
         avg_train_loss = epoch_loss / max(n_batches, 1)
