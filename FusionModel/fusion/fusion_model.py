@@ -196,7 +196,7 @@ class FusionNet(nn.Module):
         - 9 input channels (Change 5)
     """
 
-    def __init__(self, in_channels=9, base_features=48, n_hypotheses=4,
+    def __init__(self, in_channels=9, base_features=48, n_hypotheses=1,
                  max_history=32, rnn_hidden=192, rnn_layers=2, max_grid_size=128,
                  rnn_dropout=0.15):
         super().__init__()
@@ -443,6 +443,77 @@ def compute_loss(position_logits, action_logits, target_y, target_x, target_acti
 
     total_loss = pos_weight * pos_loss + act_loss + diversity_weight * diversity_loss
     return total_loss, pos_loss, act_loss, diversity_loss
+
+
+def compute_ranking_loss(position_logits, action_logits, target_y, target_x, target_action,
+                         boundary_masks, margin=1.0, n_hard_neg=32,
+                         label_smoothing=0.1, neighbor_weight=0.3):
+    """
+    Margin-based ranking loss with hard negative mining.
+
+    Instead of predicting SA's exact position (classification), train the model
+    to RANK SA's position higher than other boundary positions (ranking).
+
+    Position loss: hinge loss max(0, margin + s_neg - s_pos), with top-k hard negatives.
+    Action loss: cross-entropy at GT position + neighbor supervision (unchanged).
+    """
+    B, K, H, W = position_logits.shape  # K=1
+    device = position_logits.device
+    batch_idx = torch.arange(B, device=device)
+
+    # Position scores: [B, H*W]
+    scores = position_logits[:, 0].float().reshape(B, -1)
+    mask = boundary_masks.reshape(B, -1).bool()
+    target_flat = target_y * W + target_x
+
+    # Ensure target is always in the valid mask
+    mask[batch_idx, target_flat] = True
+
+    # Positive scores
+    s_pos = scores[batch_idx, target_flat]  # [B]
+
+    # Negative mask (boundary minus positive)
+    neg_mask = mask.clone()
+    neg_mask[batch_idx, target_flat] = False
+
+    # Hinge loss: max(0, margin + s_neg - s_pos) for all negatives
+    hinge = F.relu(margin + scores - s_pos.unsqueeze(1))  # [B, H*W]
+    hinge = hinge * neg_mask.float()
+
+    # Hard negative mining: top-k hardest per sample
+    n_valid_min = int(neg_mask.float().sum(1).min().item())
+    top_k = min(n_hard_neg, max(n_valid_min, 1))
+    if top_k > 0:
+        top_hinge, _ = hinge.topk(top_k, dim=1)
+        pos_loss = top_hinge.mean()
+    else:
+        pos_loss = torch.tensor(0.0, device=device)
+
+    # --- Action loss at GT position (unchanged) ---
+    act_at_gt = action_logits[batch_idx, :, target_y, target_x]
+    act_loss = F.cross_entropy(act_at_gt, target_action, label_smoothing=label_smoothing)
+
+    # Neighbor action supervision (unchanged)
+    neighbor_loss = torch.tensor(0.0, device=device)
+    n_neighbors = 0
+    for dy, dx in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+        ny = (target_y + dy).clamp(0, H - 1)
+        nx = (target_x + dx).clamp(0, W - 1)
+        valid = ((ny != target_y) | (nx != target_x))
+        if valid.any():
+            act_neighbor = action_logits[batch_idx, :, ny, nx]
+            nl = F.cross_entropy(
+                act_neighbor, target_action, label_smoothing=0.2, reduction='none'
+            )
+            neighbor_loss = neighbor_loss + (nl * valid.float()).sum()
+            n_neighbors += valid.sum()
+
+    if n_neighbors > 0:
+        neighbor_loss = neighbor_loss / n_neighbors.float()
+    act_loss = act_loss + neighbor_weight * neighbor_loss
+
+    total_loss = pos_loss + act_loss
+    return total_loss, pos_loss, act_loss
 
 
 def count_parameters(model):

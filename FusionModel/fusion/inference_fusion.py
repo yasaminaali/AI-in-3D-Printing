@@ -398,13 +398,15 @@ def plot_cycle_on_ax(ax, h, zones_np, title):
 
 def _get_candidate_positions(model, h_obj, zones_np, boundary_mask, grid_w, grid_h,
                              initial_crossings, history_buffer, dilated_mask, device,
-                             max_history=32, n_positions=50):
-    """Extract top-N unique positions from all K hypothesis heads.
+                             max_history=32, n_positions=10):
+    """Extract top-N positions from the ranking model's score map.
 
-    The model is used purely as a proposal generator — it suggests WHERE to
-    operate, but we try ALL 12 actions at each position externally.
+    With K=1 (ranking-trained model), the score map directly indicates
+    crossing-reduction potential. Higher score = more likely to be productive.
+    Fewer but higher-quality proposals (10 instead of 50) since ranking model
+    is more targeted.
 
-    Returns list of (py, px, confidence) tuples, sorted by confidence descending.
+    Returns list of (py, px, score) tuples, sorted by score descending.
     """
     state = encode_state_9ch(zones_np, boundary_mask, h_obj, grid_w, grid_h, initial_crossings)
     state_batch = state.unsqueeze(0).to(device)
@@ -417,34 +419,31 @@ def _get_candidate_positions(model, h_obj, zones_np, boundary_mask, grid_w, grid
     )
 
     mask_1d = dilated_mask.reshape(-1).bool()
-    K = pos_logits.shape[1]
     n_valid = int(mask_1d.sum().item())
     if n_valid == 0:
         return []
 
-    # Collect top positions from each hypothesis
-    per_hyp_top = max(n_positions // K, 10)
+    # K=1: single score map, no hypothesis aggregation needed
+    K = pos_logits.shape[1]
+    if K == 1:
+        scores = pos_logits[0, 0].reshape(-1)
+    else:
+        # Backward compat: if loaded K>1 model, take max across hypotheses
+        scores = pos_logits[0].reshape(K, -1).max(dim=0).values
 
-    pos_scores = {}
-    for kk in range(K):
-        pos_flat = pos_logits[0, kk].reshape(-1)
-        pos_masked = pos_flat.masked_fill(~mask_1d, float('-inf'))
-        probs = torch.softmax(pos_masked, dim=-1)
-        n_top = min(per_hyp_top, n_valid)
-        topk_vals, topk_idx = probs.topk(n_top)
+    scores_masked = scores.masked_fill(~mask_1d, float('-inf'))
+    n_top = min(n_positions, n_valid)
+    topk_vals, topk_idx = scores_masked.topk(n_top)
 
-        for i in range(n_top):
-            flat_idx = topk_idx[i].item()
-            score = topk_vals[i].item()
-            py = flat_idx // MAX_GRID_SIZE
-            px = flat_idx % MAX_GRID_SIZE
-            key = (py, px)
-            if key not in pos_scores or score > pos_scores[key]:
-                pos_scores[key] = score
+    positions = []
+    for i in range(n_top):
+        flat_idx = topk_idx[i].item()
+        score = topk_vals[i].item()
+        py = flat_idx // MAX_GRID_SIZE
+        px = flat_idx % MAX_GRID_SIZE
+        positions.append((py, px, score))
 
-    # Sort by confidence, return top n_positions
-    sorted_positions = sorted(pos_scores.items(), key=lambda x: -x[1])[:n_positions]
-    return [(py, px, score) for (py, px), score in sorted_positions]
+    return positions
 
 
 # ---------------------------------------------------------------------------
@@ -459,8 +458,8 @@ def run_inference(
     zone_pattern='unknown',
     max_history=32,
     max_steps=300,
-    n_candidates=50,
-    n_random=50,
+    n_candidates=10,
+    n_random=10,
     device=torch.device('cuda'),
     verbose=False,
 ):
@@ -758,7 +757,7 @@ def load_model(checkpoint_path, device):
     model = FusionNet(
         in_channels=args.get('in_channels', 9),
         base_features=args.get('base_features', 48),
-        n_hypotheses=args.get('n_hypotheses', 4),
+        n_hypotheses=args.get('n_hypotheses', 1),
         max_history=args.get('max_history', MAX_HISTORY),
         rnn_hidden=args.get('rnn_hidden', 192),
         rnn_layers=args.get('rnn_layers', 2),
@@ -787,14 +786,14 @@ def evaluate_all_patterns(
     n_per_pattern=25,
     max_steps=300,
     max_history=32,
-    n_candidates=50,
-    n_random=50,
+    n_candidates=10,
+    n_random=10,
     device=torch.device('cuda'),
     visualize=False,
     vis_dir='nn_checkpoints/fusion/vis',
 ):
     console.print(Panel.fit(
-        "[bold cyan]FusionNet v3 — Proposal-Filter + SA Inference[/bold cyan]\n"
+        "[bold cyan]FusionNet v4 — Ranking Model + SA Inference[/bold cyan]\n"
         f"Data: {jsonl_path}\n"
         f"Patterns: {', '.join(ALL_PATTERNS)}\n"
         f"Samples per pattern: {n_per_pattern}\n"
@@ -1125,10 +1124,10 @@ def main():
     parser.add_argument('--n_per_pattern', type=int, default=25)
     parser.add_argument('--max_steps', type=int, default=300,
                         help='Max SA steps per sample (adaptive: max(this, 3*crossings))')
-    parser.add_argument('--n_candidates', type=int, default=50,
+    parser.add_argument('--n_candidates', type=int, default=10,
                         help='Model-proposed candidate positions per step')
-    parser.add_argument('--n_random', type=int, default=50,
-                        help='Random grid positions per step (full-grid exploration)')
+    parser.add_argument('--n_random', type=int, default=10,
+                        help='Random grid positions per step (SA escape exploration)')
     parser.add_argument('--device', default='cuda')
     parser.add_argument('--verbose', action='store_true')
     parser.add_argument('--visualize', action='store_true')

@@ -32,7 +32,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from fusion_model import FusionNet, compute_loss, count_parameters
+from fusion_model import FusionNet, compute_ranking_loss, count_parameters
 from fusion_dataset import create_train_val_split, build_9ch_batch_gpu
 
 from rich.console import Console
@@ -85,7 +85,7 @@ def create_dashboard_str(epoch, epochs, metrics, best_metrics, lr, gpu_mem_used,
     val = metrics.get('val', {})
     lines = [
         f"{'='*70}",
-        f"  FusionNet v2 (CNN+RNN+FiLM) | Epoch {epoch}/{epochs} | "
+        f"  FusionNet v4 (Ranking) | Epoch {epoch}/{epochs} | "
         f"LR: {lr:.2e} | GPUs: {world_size}",
         f"  GPU: {gpu_mem_used:.1f}/{gpu_mem_total:.1f} GB | "
         f"Patience: {patience_counter}/{patience_max}",
@@ -94,34 +94,34 @@ def create_dashboard_str(epoch, epochs, metrics, best_metrics, lr, gpu_mem_used,
         f"pos={train.get('pos_loss', 0):.4f} "
         f"act={train.get('act_loss', 0):.4f}",
         f"  VAL   | loss={val.get('loss', 0):.4f} "
-        f"pos_top1={val.get('pos_acc_top1', 0):.4f} "
-        f"pos_top5={val.get('pos_acc_top5', 0):.4f} "
-        f"oracle={val.get('oracle_acc_top1', 0):.4f}",
+        f"recall@5={val.get('recall_at_5', 0):.4f} "
+        f"recall@10={val.get('recall_at_10', 0):.4f} "
+        f"rank_med={val.get('pos_rank_median', 0):.1f}",
         f"        | act@gt={val.get('act_acc_at_gt', 0):.4f} "
-        f"e2e={val.get('act_acc_e2e', 0):.4f}",
+        f"violation={val.get('margin_violation_rate', 0):.4f}",
         f"  BEST  | epoch={best_metrics.get('epoch', 0)} "
         f"loss={best_metrics.get('val_loss', float('inf')):.4f} "
-        f"pos_top1={best_metrics.get('pos_top1', 0):.4f} "
-        f"oracle={best_metrics.get('oracle_top1', 0):.4f}",
+        f"recall@5={best_metrics.get('recall_at_5', 0):.4f} "
+        f"recall@10={best_metrics.get('recall_at_10', 0):.4f}",
         f"  Time: {metrics.get('epoch_time', '?')}s",
         f"{'='*70}",
     ]
     return '\n'.join(lines)
 
 
-def validate(model, val_loader, device, pos_weight=5.0, diversity_weight=0.5, use_amp=True, boundary_dilation=1):
+def validate(model, val_loader, device, margin=1.0, n_hard_neg=32, use_amp=True, boundary_dilation=1):
     model.eval()
     total_loss = 0
     total_pos_loss = 0
     total_act_loss = 0
-    total_div_loss = 0
     n_batches = 0
 
-    pos_correct_top1 = 0
-    pos_correct_top5 = 0
-    oracle_correct_top1 = 0
+    recall_at_5 = 0
+    recall_at_10 = 0
+    pos_rank_sum = 0
     act_correct_at_gt = 0
-    act_correct_at_pred = 0
+    violation_count = 0
+    neg_count = 0
     total_samples = 0
 
     with torch.no_grad():
@@ -147,18 +147,16 @@ def validate(model, val_loader, device, pos_weight=5.0, diversity_weight=0.5, us
                 pos_logits, act_logits = model(
                     states, hist_act, hist_py, hist_px, hist_cb, hist_ca, hist_mask
                 )
-                # Compute loss in float32 for stability
                 pos_logits_f = pos_logits.float()
                 act_logits_f = act_logits.float()
-                loss, pos_loss, act_loss, div_loss = compute_loss(
+                loss, pos_loss, act_loss = compute_ranking_loss(
                     pos_logits_f, act_logits_f, target_y, target_x, target_action,
-                    boundary_masks, pos_weight=pos_weight, diversity_weight=diversity_weight,
+                    boundary_masks, margin=margin, n_hard_neg=n_hard_neg,
                 )
 
             total_loss += loss.item()
             total_pos_loss += pos_loss.item()
             total_act_loss += act_loss.item()
-            total_div_loss += div_loss.item()
             n_batches += 1
 
             B, K, H, W = pos_logits.shape
@@ -169,46 +167,34 @@ def validate(model, val_loader, device, pos_weight=5.0, diversity_weight=0.5, us
             if not has_boundary.any():
                 continue
 
-            # Per-hypothesis: use float32 logits
-            pos_flat = pos_logits_f.reshape(B, K, -1)
-            mask_k = mask_flat.unsqueeze(1).expand_as(pos_flat)
-            pos_masked_k = pos_flat.masked_fill(~mask_k, -1e9)
+            # --- Ranking metrics (K=1) ---
+            scores = pos_logits_f[:, 0].reshape(B, -1)  # [B, H*W]
+            scores_masked = scores.masked_fill(~mask_flat, float('-inf'))
 
-            # Per-hypothesis candidates (match inference approach)
-            probs_k = torch.softmax(pos_masked_k, dim=-1)
-            pos_pooled = probs_k.mean(dim=1)
+            target_flat = target_y * W + target_x
+            s_pos = scores[batch_idx, target_flat]  # [B]
 
-            top1_flat = pos_pooled.argmax(dim=1)
-            pred_y1 = top1_flat // W
-            pred_x1 = top1_flat % W
-            pos_top1 = (pred_y1 == target_y) & (pred_x1 == target_x) & has_boundary
+            # Rank of positive among boundary positions (1-indexed, lower=better)
+            rank = (scores_masked > s_pos.unsqueeze(1)).float().sum(1) + 1  # [B]
 
-            topk_flat = pos_pooled.topk(min(5, pos_pooled.shape[1]), dim=1).indices
-            topk_y = topk_flat // W
-            topk_x = topk_flat % W
-            pos_top5 = (
-                (topk_y == target_y.unsqueeze(1)) & (topk_x == target_x.unsqueeze(1))
-            ).any(dim=1) & has_boundary
+            valid = has_boundary
+            recall_at_5 += ((rank <= 5) & valid).sum().item()
+            recall_at_10 += ((rank <= 10) & valid).sum().item()
+            pos_rank_sum += (rank * valid.float()).sum().item()
 
-            per_hyp_argmax = pos_masked_k.argmax(dim=-1)
-            per_hyp_y = per_hyp_argmax // W
-            per_hyp_x = per_hyp_argmax % W
-            oracle_hit = (
-                (per_hyp_y == target_y.unsqueeze(1)) & (per_hyp_x == target_x.unsqueeze(1))
-            ).any(dim=1) & has_boundary
-
+            # Action accuracy at GT position
             act_at_gt = act_logits_f[batch_idx, :, target_y, target_x].argmax(dim=1)
-            act_gt_ok = (act_at_gt == target_action) & has_boundary
-
-            act_at_pred = act_logits_f[batch_idx, :, pred_y1, pred_x1].argmax(dim=1)
-            e2e_ok = (act_at_pred == target_action) & pos_top1
-
-            pos_correct_top1 += pos_top1.sum().item()
-            pos_correct_top5 += pos_top5.sum().item()
-            oracle_correct_top1 += oracle_hit.sum().item()
+            act_gt_ok = (act_at_gt == target_action) & valid
             act_correct_at_gt += act_gt_ok.sum().item()
-            act_correct_at_pred += e2e_ok.sum().item()
-            total_samples += has_boundary.sum().item()
+
+            # Margin violation rate
+            neg_mask = mask_flat.clone()
+            neg_mask[batch_idx, target_flat] = False
+            violations = ((scores - s_pos.unsqueeze(1)) > 0) & neg_mask
+            violation_count += violations.float().sum().item()
+            neg_count += neg_mask.float().sum().item()
+
+            total_samples += valid.sum().item()
 
     n = max(n_batches, 1)
     s = max(total_samples, 1)
@@ -216,12 +202,11 @@ def validate(model, val_loader, device, pos_weight=5.0, diversity_weight=0.5, us
         'loss': total_loss / n,
         'pos_loss': total_pos_loss / n,
         'act_loss': total_act_loss / n,
-        'div_loss': total_div_loss / n,
-        'pos_acc_top1': pos_correct_top1 / s,
-        'pos_acc_top5': pos_correct_top5 / s,
-        'oracle_acc_top1': oracle_correct_top1 / s,
+        'recall_at_5': recall_at_5 / s,
+        'recall_at_10': recall_at_10 / s,
+        'pos_rank_median': pos_rank_sum / s,
         'act_acc_at_gt': act_correct_at_gt / s,
-        'act_acc_e2e': act_correct_at_pred / s,
+        'margin_violation_rate': violation_count / max(neg_count, 1),
     }
 
 
@@ -317,8 +302,8 @@ def train(args):
     best_val_loss = float('inf')
     best_metrics = {
         'val_loss': float('inf'), 'epoch': 0,
-        'pos_top1': 0, 'pos_top5': 0, 'oracle_top1': 0,
-        'act_at_gt': 0, 'act_e2e': 0,
+        'recall_at_5': 0, 'recall_at_10': 0,
+        'pos_rank_median': 999, 'act_at_gt': 0,
     }
 
     optimizer = torch.optim.AdamW(
@@ -361,11 +346,10 @@ def train(args):
             best_metrics = {
                 'val_loss': best_val_loss,
                 'epoch': ckpt.get('epoch', 0),
-                'pos_top1': vm.get('pos_top1', 0),
-                'pos_top5': vm.get('pos_top5', 0),
-                'oracle_top1': vm.get('oracle_top1', 0),
-                'act_at_gt': vm.get('act_at_gt', 0),
-                'act_e2e': vm.get('act_e2e', 0),
+                'recall_at_5': vm.get('recall_at_5', 0),
+                'recall_at_10': vm.get('recall_at_10', 0),
+                'pos_rank_median': vm.get('pos_rank_median', 999),
+                'act_at_gt': vm.get('act_at_gt', vm.get('act_acc_at_gt', 0)),
             }
         if is_main_process():
             console.print(f"  Resumed from epoch {start_epoch - 1}, best_val_loss={best_val_loss:.4f}")
@@ -383,9 +367,9 @@ def train(args):
         if not args.resume:
             csv_writer.writerow([
                 'epoch', 'train_loss', 'train_pos_loss', 'train_act_loss',
-                'val_loss', 'val_pos_loss', 'val_act_loss', 'val_div_loss',
-                'val_pos_acc_top1', 'val_pos_acc_top5', 'val_oracle_acc_top1',
-                'val_act_acc_at_gt', 'val_act_acc_e2e',
+                'val_loss', 'val_pos_loss', 'val_act_loss',
+                'val_recall_at_5', 'val_recall_at_10', 'val_pos_rank_median',
+                'val_act_acc_at_gt', 'val_margin_violation_rate',
                 'learning_rate', 'epoch_time'
             ])
 
@@ -439,17 +423,17 @@ def train(args):
                     states, hist_act, hist_py, hist_px, hist_cb, hist_ca, hist_mask
                 )
                 # Loss in float32
-                loss, pos_loss, act_loss, div_loss = compute_loss(
+                loss, pos_loss, act_loss = compute_ranking_loss(
                     pos_logits.float(), act_logits.float(),
                     target_y, target_x, target_action, boundary_masks,
-                    pos_weight=args.pos_weight,
-                    diversity_weight=args.diversity_weight,
+                    margin=args.margin,
+                    n_hard_neg=args.n_hard_neg,
                 )
 
             if torch.isnan(loss) or torch.isinf(loss):
                 if is_main_process():
-                    console.print(f"[red]WARNING: NaN/Inf loss at step {global_step}, skipping batch[/red]")
-                    console.print(f"  pos_loss={pos_loss.item()}, act_loss={act_loss.item()}")
+                    console.print(f"[red]WARNING: NaN/Inf loss at step {global_step}, skipping[/red]")
+                    console.print(f"  pos={pos_loss.item()}, act={act_loss.item()}")
                 optimizer.zero_grad()
                 continue
 
@@ -480,8 +464,8 @@ def train(args):
 
         # ---- Validate ----
         val_metrics = validate(model, val_loader, device,
-                               pos_weight=args.pos_weight,
-                               diversity_weight=args.diversity_weight,
+                               margin=args.margin,
+                               n_hard_neg=args.n_hard_neg,
                                use_amp=args.use_amp,
                                boundary_dilation=args.boundary_dilation)
 
@@ -499,11 +483,10 @@ def train(args):
                 patience_counter = 0
                 best_metrics = {
                     'val_loss': val_loss, 'epoch': epoch,
-                    'pos_top1': val_metrics['pos_acc_top1'],
-                    'pos_top5': val_metrics['pos_acc_top5'],
-                    'oracle_top1': val_metrics['oracle_acc_top1'],
+                    'recall_at_5': val_metrics['recall_at_5'],
+                    'recall_at_10': val_metrics['recall_at_10'],
+                    'pos_rank_median': val_metrics['pos_rank_median'],
                     'act_at_gt': val_metrics['act_acc_at_gt'],
-                    'act_e2e': val_metrics['act_acc_e2e'],
                 }
                 # Save best
                 raw_model = model.module if hasattr(model, 'module') else model
@@ -539,12 +522,12 @@ def train(args):
                 'train': {'loss': avg_train_loss, 'pos_loss': avg_train_pos, 'act_loss': avg_train_act},
                 'val': {
                     'loss': val_loss, 'pos_loss': val_metrics['pos_loss'],
-                    'act_loss': val_metrics['act_loss'], 'div_loss': val_metrics['div_loss'],
-                    'pos_acc_top1': val_metrics['pos_acc_top1'],
-                    'pos_acc_top5': val_metrics['pos_acc_top5'],
-                    'oracle_acc_top1': val_metrics['oracle_acc_top1'],
+                    'act_loss': val_metrics['act_loss'],
+                    'recall_at_5': val_metrics['recall_at_5'],
+                    'recall_at_10': val_metrics['recall_at_10'],
+                    'pos_rank_median': val_metrics['pos_rank_median'],
                     'act_acc_at_gt': val_metrics['act_acc_at_gt'],
-                    'act_acc_e2e': val_metrics['act_acc_e2e'],
+                    'margin_violation_rate': val_metrics['margin_violation_rate'],
                 },
                 'epoch_time': f'{epoch_time:.1f}',
             }
@@ -559,10 +542,9 @@ def train(args):
             csv_writer.writerow([
                 epoch, avg_train_loss, avg_train_pos, avg_train_act,
                 val_loss, val_metrics['pos_loss'], val_metrics['act_loss'],
-                val_metrics['div_loss'],
-                val_metrics['pos_acc_top1'], val_metrics['pos_acc_top5'],
-                val_metrics['oracle_acc_top1'],
-                val_metrics['act_acc_at_gt'], val_metrics['act_acc_e2e'],
+                val_metrics['recall_at_5'], val_metrics['recall_at_10'],
+                val_metrics['pos_rank_median'],
+                val_metrics['act_acc_at_gt'], val_metrics['margin_violation_rate'],
                 current_lr, epoch_time,
             ])
             csv_file.flush()
@@ -578,11 +560,10 @@ def train(args):
             f"[bold green]Training Complete[/bold green]\n"
             f"Best epoch: {best_metrics['epoch']}\n"
             f"Best val loss: {best_metrics['val_loss']:.4f}\n"
-            f"Position accuracy (top-1): {best_metrics['pos_top1']:.2%}\n"
-            f"Position accuracy (top-5): {best_metrics['pos_top5']:.2%}\n"
-            f"Oracle accuracy (top-1): {best_metrics['oracle_top1']:.2%}\n"
+            f"Recall@5: {best_metrics['recall_at_5']:.2%}\n"
+            f"Recall@10: {best_metrics['recall_at_10']:.2%}\n"
+            f"Position rank (avg): {best_metrics['pos_rank_median']:.1f}\n"
             f"Action accuracy @ GT pos: {best_metrics['act_at_gt']:.2%}\n"
-            f"End-to-end accuracy: {best_metrics['act_e2e']:.2%}\n"
             f"Checkpoint: {args.checkpoint_dir}/best.pt",
             border_style="green"
         ))
@@ -607,9 +588,9 @@ def main():
     parser.add_argument('--max_grid_size', type=int, default=128)
     parser.add_argument('--boundary_dilation', type=int, default=1)
     parser.add_argument('--num_workers', type=int, default=2)
-    parser.add_argument('--pos_weight', type=float, default=5.0)
-    parser.add_argument('--n_hypotheses', type=int, default=4)
-    parser.add_argument('--diversity_weight', type=float, default=0.5)
+    parser.add_argument('--margin', type=float, default=1.0, help='Margin for ranking hinge loss')
+    parser.add_argument('--n_hard_neg', type=int, default=32, help='Number of hard negatives per sample')
+    parser.add_argument('--n_hypotheses', type=int, default=1)
     parser.add_argument('--no_augment', action='store_true')
     parser.add_argument('--patience', type=int, default=40)
     parser.add_argument('--rnn_hidden', type=int, default=192)
