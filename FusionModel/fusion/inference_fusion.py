@@ -921,6 +921,8 @@ def evaluate_all_patterns(
         by_size = defaultdict(list)
         for line in available:
             traj = json.loads(line.strip())
+            if 'zone_grid' not in traj:
+                continue  # skip entries without required fields
             size_key = (traj.get('grid_W', 30), traj.get('grid_H', 30))
             by_size[size_key].append(line)
         sizes = sorted(by_size.keys())
