@@ -521,10 +521,12 @@ def run_inference(
     # local minimum — no single operation reduces crossings. SA escapes by
     # random-walking through worse states until a better basin is found.
     # Model steps cost ~50-100ms each; random steps cost ~0.5ms.
-    # So we run 5000 cheap random steps (~2.5s) instead of 50 expensive ones.
-    phase0_steps = 5000
+    # Scale steps with grid size: SA data shows 80x80 needs ~660 accepted ops,
+    # 100x100 needs ~3500. Since many random ops are invalid/rejected, we need
+    # ~10x more attempts than accepted ops needed.
+    phase0_steps = max(10000, initial_crossings * 100)
     phase0_T_max = max(initial_crossings * 0.25, 5.0)  # aggressive exploration
-    phase0_T_min = 0.5
+    phase0_T_min = 1.0  # don't cool too much — keep exploring
     phase0_accepted = 0
     phase0_sequence = []  # track all accepted ops for best-ever snapshot
 
@@ -916,11 +918,16 @@ def evaluate_all_patterns(
             console.print(f"  [yellow]Warning: no samples for pattern '{pattern}'[/yellow]")
             continue
         # Stratified sampling across grid sizes (not just last N which are all 80x80)
+        # Filter: must have zone_grid AND SA must have achieved non-zero reduction
         by_size = defaultdict(list)
         for line in available:
             traj = json.loads(line.strip())
             if 'zone_grid' not in traj:
-                continue  # skip entries without required fields
+                continue
+            sa_init = traj.get('initial_crossings', 0)
+            sa_final = traj.get('final_crossings', sa_init)
+            if sa_init <= 0 or sa_final >= sa_init:
+                continue  # skip entries where SA failed (no reduction baseline)
             size_key = (traj.get('grid_W', 30), traj.get('grid_H', 30))
             by_size[size_key].append(line)
         sizes = sorted(by_size.keys())
