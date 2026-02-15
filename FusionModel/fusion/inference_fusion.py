@@ -1045,9 +1045,13 @@ def evaluate_all_patterns(
         elapsed = _time.time() - t0
         eta = elapsed / (sample_idx + 1) * (total_samples - sample_idx - 1)
         p0_red = result.get('phase0_reduction', 0)
+        init_c = result['initial_crossings']
+        final_c = result['final_crossings']
+        tgt_lo = result.get('target_lower', '?')
+        tgt_hi = result.get('target_upper', '?')
         print(
             f"  [{sample_idx+1}/{total_samples}] {pattern} {grid_w}x{grid_h} | "
-            f"red={result['reduction']}/{sa_reduction} ({result['reduction_pct']:.1f}%) | "
+            f"{init_c}→{final_c} (SA:{sa_final}) target:[{tgt_lo},{tgt_hi}] | "
             f"P0={p0_red} | ops={result['num_operations']} | CV={result.get('final_cv', 0):.2f} | "
             f"target={in_target} | {sample_time:.1f}s | ETA {eta/60:.0f}m",
             flush=True,
