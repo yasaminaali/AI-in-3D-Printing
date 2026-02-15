@@ -69,19 +69,12 @@ CV_THRESHOLDS = {
 # ---------------------------------------------------------------------------
 
 def _infer_init_pattern(zone_pattern, zones_np, grid_w, grid_h):
-    """Choose the best init pattern based on zone boundary orientation.
+    """All existing dataset was generated with default zigzag (horizontal).
 
-    The training data was generated with default 'zigzag' (horizontal), but
-    this creates a deep local minimum for patterns with vertical boundaries
-    (left_right, stripes). Using vertical_zigzag for these patterns avoids
-    the local minimum entirely — the path runs within zones and only crosses
-    boundaries at column transitions.
-
-    For training: still uses 'zigzag' (matches training data).
-    For inference: uses the optimal pattern per zone layout.
+    We intentionally start with zigzag (many crossings) because the goal is
+    to REDUCE crossings to a target range. Starting from the minimum
+    (vertical_zigzag) would leave nothing to reduce.
     """
-    if zone_pattern in ('left_right', 'stripes'):
-        return 'vertical_zigzag'
     return 'zigzag'
 
 
