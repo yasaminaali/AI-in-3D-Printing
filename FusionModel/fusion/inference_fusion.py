@@ -465,7 +465,7 @@ def run_inference(
     grid_w, grid_h,
     zone_pattern='unknown',
     max_history=32,
-    max_steps=300,
+    max_steps=200,
     n_candidates=10,
     n_random=10,
     device=torch.device('cuda'),
@@ -473,8 +473,8 @@ def run_inference(
 ):
     """
     Proposal-filter inference with SA-style acceptance:
-    1. Model proposes candidate positions + random grid positions
-    2. Try ALL 12 actions at each position (brute-force)
+    1. Model proposes top-N positions + top-3 actions per position
+    2. Random positions try all 12 actions (SA escape from local optima)
     3. Pick best candidate (smallest delta, even if positive)
     4. Accept with SA criterion: improvements always, worse moves with
        probability exp(-delta/T) where T cools over time
@@ -517,7 +517,9 @@ def run_inference(
     total_attempts = 0
     invalid_count = 0
     accepted_worse = 0
-    sa_steps = max(max_steps, initial_crossings * 8)
+    # With ranking model + targeted proposals, 300 steps is sufficient
+    # (old: initial_crossings * 8 was for blind random exploration)
+    sa_steps = max_steps
 
     # ---- Phase 1: SA-style exploration ----
     model.eval()
@@ -800,7 +802,7 @@ def evaluate_all_patterns(
     model,
     jsonl_path,
     n_per_pattern=25,
-    max_steps=300,
+    max_steps=200,
     max_history=32,
     n_candidates=10,
     n_random=10,
@@ -1138,8 +1140,8 @@ def main():
     parser.add_argument('--checkpoint', default='FusionModel/nn_checkpoints/fusion/best.pt')
     parser.add_argument('--jsonl', default='datasets/final_dataset.jsonl')
     parser.add_argument('--n_per_pattern', type=int, default=25)
-    parser.add_argument('--max_steps', type=int, default=300,
-                        help='Max SA steps per sample (adaptive: max(this, 3*crossings))')
+    parser.add_argument('--max_steps', type=int, default=200,
+                        help='Max steps per sample (each step tries ~150 candidates)')
     parser.add_argument('--n_candidates', type=int, default=10,
                         help='Model-proposed candidate positions per step')
     parser.add_argument('--n_random', type=int, default=10,
