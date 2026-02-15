@@ -1,12 +1,12 @@
 """
-FusionNet v3 (CNN+RNN+FiLM) Inference for Hamiltonian Path Optimization.
+FusionNet v4 (CNN+RNN+FiLM) Inference for Hamiltonian Path Optimization.
 
-Proposal-filter inference with SA-style acceptance:
-- Model proposes candidate positions + random boundary positions
-- Brute-force tries ALL 12 actions at each position
-- SA acceptance criterion (exp(-delta/T)) to escape local optima
-- Best-ever state tracking with restore at end
-- Two-phase: SA exploration then greedy redistribution for uniformity
+Three-phase inference:
+- Phase 0: Pure random SA escape (5000 fast steps, no model, ~2.5s)
+  Escapes structural local minima for left_right/stripes patterns
+- Phase 1: Model-guided SA exploration (200 steps with model proposals)
+  Targeted crossing reduction using ranking model proposals
+- Phase 2: Greedy redistribution for crossing uniformity
 
 Usage:
     PYTHONPATH=$(pwd):$PYTHONPATH python FusionModel/fusion/inference_fusion.py \\
@@ -514,11 +514,80 @@ def run_inference(
     total_attempts = 0
     invalid_count = 0
     accepted_worse = 0
-    # With ranking model + targeted proposals, 300 steps is sufficient
-    # (old: initial_crossings * 8 was for blind random exploration)
     sa_steps = max_steps
 
-    # ---- Phase 1: SA-style exploration ----
+    # ---- Phase 0: Pure random SA escape (no model) ----
+    # For structured patterns (left_right, stripes), the zigzag init is a
+    # local minimum — no single operation reduces crossings. SA escapes by
+    # random-walking through worse states until a better basin is found.
+    # Model steps cost ~50-100ms each; random steps cost ~0.5ms.
+    # So we run 5000 cheap random steps (~2.5s) instead of 50 expensive ones.
+    phase0_steps = 5000
+    phase0_T_max = max(initial_crossings * 0.25, 5.0)  # aggressive exploration
+    phase0_T_min = 0.5
+    phase0_accepted = 0
+    phase0_sequence = []  # track all accepted ops for best-ever snapshot
+
+    bpos = boundary_mask.nonzero(as_tuple=False)
+    n_bpos = len(bpos)
+
+    if n_bpos > 0:
+        for step in range(phase0_steps):
+            # Early exit if we've escaped well
+            if best_crossings <= target_upper:
+                break
+
+            progress = step / max(phase0_steps - 1, 1)
+            T = phase0_T_max * (phase0_T_min / phase0_T_max) ** progress
+
+            # Random boundary position + random action
+            idx = np.random.randint(0, n_bpos)
+            py, px = bpos[idx, 0].item(), bpos[idx, 1].item()
+            variant = all_variants[np.random.randint(0, len(all_variants))]
+            op_type = 'T' if variant in TRANSPOSE_VARIANTS else 'F'
+
+            if not validate_action(op_type, px, py, variant, grid_w, grid_h):
+                continue
+
+            saved = save_grid_state(h)
+            success = apply_op(h, op_type, px, py, variant)
+            if not success:
+                restore_grid_state(h, saved)
+                continue
+
+            new_crossings = compute_crossings(h, zones_np)
+            delta = new_crossings - current_crossings
+
+            # SA acceptance
+            if delta <= 0 or (np.random.random() < np.exp(-delta / max(T, 1e-10))):
+                phase0_sequence.append({
+                    'kind': op_type, 'x': px, 'y': py,
+                    'variant': variant,
+                    'crossings_before': current_crossings,
+                    'crossings_after': new_crossings,
+                })
+                current_crossings = new_crossings
+                phase0_accepted += 1
+
+                if current_crossings < best_crossings:
+                    best_crossings = current_crossings
+                    best_H = [row[:] for row in h.H]
+                    best_V = [row[:] for row in h.V]
+                    best_sequence = [op.copy() for op in phase0_sequence]
+                    best_history_list = []
+            else:
+                restore_grid_state(h, saved)
+
+    # Restore best state from Phase 0 before starting model-guided phase
+    h.H = best_H
+    h.V = best_V
+    current_crossings = best_crossings
+    sequence = list(best_sequence)
+    history_buffer = deque(best_history_list, maxlen=max_history)
+
+    phase0_reduction = initial_crossings - best_crossings
+
+    # ---- Phase 1: Model-guided SA exploration ----
     model.eval()
     with torch.no_grad():
         for step in range(sa_steps):
@@ -758,6 +827,8 @@ def run_inference(
         'redistribution_steps': redistribution_steps,
         'cv_threshold': cv_threshold,
         'accepted_worse': accepted_worse,
+        'phase0_reduction': phase0_reduction,
+        'phase0_accepted': phase0_accepted,
     }
 
 
@@ -846,7 +917,29 @@ def evaluate_all_patterns(
         if n_test == 0:
             console.print(f"  [yellow]Warning: no samples for pattern '{pattern}'[/yellow]")
             continue
-        selected = available[-n_test:]
+        # Stratified sampling across grid sizes (not just last N which are all 80x80)
+        by_size = defaultdict(list)
+        for line in available:
+            traj = json.loads(line.strip())
+            size_key = (traj.get('grid_W', 30), traj.get('grid_H', 30))
+            by_size[size_key].append(line)
+        sizes = sorted(by_size.keys())
+        # Round-robin across sizes until we have n_test samples
+        selected = []
+        size_indices = {s: 0 for s in sizes}
+        while len(selected) < n_test:
+            added_any = False
+            for s in sizes:
+                if len(selected) >= n_test:
+                    break
+                lines_for_size = by_size[s]
+                idx = size_indices[s]
+                if idx < len(lines_for_size):
+                    selected.append(lines_for_size[idx])
+                    size_indices[s] = idx + 1
+                    added_any = True
+            if not added_any:
+                break
         for line in selected:
             test_samples.append((pattern, line))
 
@@ -923,10 +1016,11 @@ def evaluate_all_patterns(
         in_target = "Y" if result.get('in_target_range') else "N"
         elapsed = _time.time() - t0
         eta = elapsed / (sample_idx + 1) * (total_samples - sample_idx - 1)
+        p0_red = result.get('phase0_reduction', 0)
         print(
             f"  [{sample_idx+1}/{total_samples}] {pattern} {grid_w}x{grid_h} | "
             f"red={result['reduction']}/{sa_reduction} ({result['reduction_pct']:.1f}%) | "
-            f"ops={result['num_operations']} | CV={result.get('final_cv', 0):.2f} | "
+            f"P0={p0_red} | ops={result['num_operations']} | CV={result.get('final_cv', 0):.2f} | "
             f"target={in_target} | {sample_time:.1f}s | ETA {eta/60:.0f}m",
             flush=True,
         )
