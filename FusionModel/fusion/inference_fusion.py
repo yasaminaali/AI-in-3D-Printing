@@ -544,31 +544,55 @@ def run_inference(
             progress = step / max(phase0_steps - 1, 1)
             T = phase0_T_max * (phase0_T_min / phase0_T_max) ** progress
 
-            # Random position from ENTIRE grid (not just boundary)
-            # Path restructuring far from boundary is needed to escape local optima
+            # Random position from ENTIRE grid
             py = np.random.randint(0, grid_h)
             px = np.random.randint(0, grid_w)
-            variant = all_variants[np.random.randint(0, len(all_variants))]
-            op_type = 'T' if variant in TRANSPOSE_VARIANTS else 'F'
 
-            if not validate_action(op_type, px, py, variant, grid_w, grid_h):
-                continue
+            # Try ALL 12 variants at this position (zigzag is rigid — only ~0.7%
+            # of single random ops succeed, so we need to try all variants)
+            # Shuffle to randomize which succeeding variant we pick
+            shuffled_variants = list(all_variants)
+            np.random.shuffle(shuffled_variants)
 
-            phase0_valid += 1
+            best_step_delta = None
+            best_step_op = None
+
             saved = save_grid_state(h)
-            success = apply_op(h, op_type, px, py, variant)
-            if not success:
-                restore_grid_state(h, saved)
+            for variant in shuffled_variants:
+                op_type = 'T' if variant in TRANSPOSE_VARIANTS else 'F'
+                if not validate_action(op_type, px, py, variant, grid_w, grid_h):
+                    continue
+                phase0_valid += 1
+
+                h.H = [row[:] for row in saved[0]]
+                h.V = [row[:] for row in saved[1]]
+                success = apply_op(h, op_type, px, py, variant)
+                if not success:
+                    continue
+
+                phase0_succeeded += 1
+                new_crossings = compute_crossings(h, zones_np)
+                delta = new_crossings - current_crossings
+                if delta < 0:
+                    phase0_improving += 1
+
+                # Keep best delta at this position (most improving or least worsening)
+                if best_step_delta is None or delta < best_step_delta:
+                    best_step_delta = delta
+                    best_step_op = (new_crossings, op_type, px, py, variant)
+
+            # Restore to pre-trial state
+            restore_grid_state(h, saved)
+
+            if best_step_op is None:
                 continue
 
-            phase0_succeeded += 1
-            new_crossings = compute_crossings(h, zones_np)
-            delta = new_crossings - current_crossings
-            if delta < 0:
-                phase0_improving += 1
+            new_crossings, op_type, px, py, variant = best_step_op
+            delta = best_step_delta
 
             # SA acceptance
             if delta <= 0 or (np.random.random() < np.exp(-delta / max(T, 1e-10))):
+                apply_op(h, op_type, px, py, variant)
                 phase0_sequence.append({
                     'kind': op_type, 'x': px, 'y': py,
                     'variant': variant,
@@ -589,8 +613,6 @@ def run_inference(
                     best_V = [row[:] for row in h.V]
                     best_sequence = [op.copy() for op in phase0_sequence]
                     best_history_list = []
-            else:
-                restore_grid_state(h, saved)
 
     print(
         f"    P0 debug: steps={phase0_steps} valid={phase0_valid} succeeded={phase0_succeeded} "
