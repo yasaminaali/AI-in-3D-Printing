@@ -32,6 +32,11 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from operations import HamiltonianSTL
 from fusion_model import FusionNet, VARIANT_REV, VARIANT_MAP, NUM_ACTIONS
+from SA_generation import (
+    refresh_move_pool, apply_move,
+    _snapshot_edges_for_move, _restore_edges_snapshot,
+    dynamic_temperature,
+)
 
 from rich.console import Console
 from rich.table import Table
@@ -516,86 +521,83 @@ def run_inference(
     accepted_worse = 0
     sa_steps = max_steps
 
-    # ---- Phase 0: Pure random SA escape (no model) ----
-    # For structured patterns (left_right, stripes), the zigzag init is a
-    # local minimum — no single operation reduces crossings. SA escapes by
-    # random-walking through worse states until a better basin is found.
-    # Model steps cost ~50-100ms each; random steps cost ~0.5ms.
-    phase0_steps = 10000
-    phase0_T_max = max(initial_crossings * 0.25, 5.0)  # aggressive exploration
-    phase0_T_min = 1.0  # don't cool too much — keep exploring
+    # ---- Phase 0: SA-style escape with pre-validated move pool ----
+    # Replicates the key mechanisms from SA_generation.py that allow SA to
+    # escape zigzag local minima:
+    #   1. Pre-computed pool of feasible moves (no wasted attempts)
+    #   2. Boundary-biased move ordering
+    #   3. Pool refresh every 250 steps (adapts to path changes)
+    #   4. Reheating when stuck (Tmax *= 1.5)
+    #   5. High temperature (Tmax=80)
+    import random as _random
+
+    phase0_steps = 5000
+    phase0_Tmax = 80.0
+    phase0_Tmin = 0.5
     phase0_accepted = 0
-    phase0_sequence = []  # track all accepted ops for best-ever snapshot
-    phase0_valid = 0
-    phase0_succeeded = 0
+    phase0_ops = 0
     phase0_improving = 0
     phase0_worst_seen = initial_crossings
     phase0_best_seen = initial_crossings
+    phase0_no_improve = 0
 
-    if grid_h > 0 and grid_w > 0:
-        for step in range(phase0_steps):
-            # Early exit if we've escaped well
-            if best_crossings <= target_upper:
-                break
+    # Convert zones to Dict[Point, int] for SA functions
+    zones_dict = {(x, y): int(zones_np[y, x]) for y in range(grid_h) for x in range(grid_w)}
 
-            progress = step / max(phase0_steps - 1, 1)
-            T = phase0_T_max * (phase0_T_min / phase0_T_max) ** progress
+    # Build initial move pool (pre-validated, boundary-biased)
+    from SA_generation import compute_crossings as sa_compute_crossings
+    move_pool = refresh_move_pool(
+        h, zones_dict, bias_to_boundary=True,
+        max_moves=5000, allowed_ops={"transpose", "flip"},
+        border_to_inner=True,
+    )
+    pool_refresh_period = 250
+    reheat_patience = 1500
+    reheat_factor = 1.5
+    reheat_cap = 600.0
 
-            # Random position from ENTIRE grid
-            py = np.random.randint(0, grid_h)
-            px = np.random.randint(0, grid_w)
+    for step in range(phase0_steps):
+        if best_crossings <= target_upper:
+            break
 
-            # Try ALL 12 variants at this position (zigzag is rigid — only ~0.7%
-            # of single random ops succeed, so we need to try all variants)
-            # Shuffle to randomize which succeeding variant we pick
-            shuffled_variants = list(all_variants)
-            np.random.shuffle(shuffled_variants)
+        # Pool refresh
+        if step > 0 and step % pool_refresh_period == 0:
+            move_pool = refresh_move_pool(
+                h, zones_dict, bias_to_boundary=True,
+                max_moves=5000, allowed_ops={"transpose", "flip"},
+                border_to_inner=True,
+            )
 
-            best_step_delta = None
-            best_step_op = None
+        T = dynamic_temperature(step, phase0_steps, Tmin=phase0_Tmin, Tmax=phase0_Tmax)
 
-            saved = save_grid_state(h)
-            for variant in shuffled_variants:
-                op_type = 'T' if variant in TRANSPOSE_VARIANTS else 'F'
-                if not validate_action(op_type, px, py, variant, grid_w, grid_h):
-                    continue
-                phase0_valid += 1
+        applied_move = None
+        applied_snap = None
 
-                h.H = [row[:] for row in saved[0]]
-                h.V = [row[:] for row in saved[1]]
-                success = apply_op(h, op_type, px, py, variant)
-                if not success:
-                    continue
+        if move_pool:
+            mv = _random.choice(move_pool)
+            snap = _snapshot_edges_for_move(h, mv)
+            if apply_move(h, mv):
+                applied_move = mv
+                applied_snap = snap
+            else:
+                _restore_edges_snapshot(h, snap)
 
-                phase0_succeeded += 1
-                new_crossings = compute_crossings(h, zones_np)
-                delta = new_crossings - current_crossings
-                if delta < 0:
-                    phase0_improving += 1
+        if applied_move is None:
+            phase0_no_improve += 1
+        else:
+            new_crossings = sa_compute_crossings(h, zones_dict)
+            delta = new_crossings - current_crossings
 
-                # Keep best delta at this position (most improving or least worsening)
-                if best_step_delta is None or delta < best_step_delta:
-                    best_step_delta = delta
-                    best_step_op = (new_crossings, op_type, px, py, variant)
+            if delta < 0:
+                accept = True
+                phase0_improving += 1
+            elif T <= 0:
+                accept = False
+            else:
+                xexp = max(-700.0, min(700.0, -float(delta) / float(T)))
+                accept = (_random.random() < np.exp(xexp))
 
-            # Restore to pre-trial state
-            restore_grid_state(h, saved)
-
-            if best_step_op is None:
-                continue
-
-            new_crossings, op_type, px, py, variant = best_step_op
-            delta = best_step_delta
-
-            # SA acceptance
-            if delta <= 0 or (np.random.random() < np.exp(-delta / max(T, 1e-10))):
-                apply_op(h, op_type, px, py, variant)
-                phase0_sequence.append({
-                    'kind': op_type, 'x': px, 'y': py,
-                    'variant': variant,
-                    'crossings_before': current_crossings,
-                    'crossings_after': new_crossings,
-                })
+            if accept:
                 current_crossings = new_crossings
                 phase0_accepted += 1
 
@@ -608,13 +610,31 @@ def run_inference(
                     best_crossings = current_crossings
                     best_H = [row[:] for row in h.H]
                     best_V = [row[:] for row in h.V]
-                    best_sequence = [op.copy() for op in phase0_sequence]
+                    best_sequence = []  # don't track P0 ops in model sequence
                     best_history_list = []
+                    phase0_no_improve = 0
+                else:
+                    phase0_no_improve += 1
+            else:
+                if applied_snap is not None:
+                    _restore_edges_snapshot(h, applied_snap)
+                phase0_no_improve += 1
 
+        # Reheating when stuck
+        if phase0_no_improve >= reheat_patience:
+            phase0_Tmax = min(reheat_cap, phase0_Tmax * reheat_factor)
+            phase0_no_improve = 0
+            move_pool = refresh_move_pool(
+                h, zones_dict, bias_to_boundary=True,
+                max_moves=5000, allowed_ops={"transpose", "flip"},
+                border_to_inner=True,
+            )
+
+    phase0_ops = phase0_accepted
     print(
-        f"    P0 debug: steps={phase0_steps} valid={phase0_valid} succeeded={phase0_succeeded} "
-        f"accepted={phase0_accepted} improving={phase0_improving} "
-        f"range=[{phase0_best_seen},{phase0_worst_seen}] init={initial_crossings}",
+        f"    P0: steps={phase0_steps} pool_size={len(move_pool)} accepted={phase0_accepted} "
+        f"improving={phase0_improving} range=[{phase0_best_seen},{phase0_worst_seen}] "
+        f"init={initial_crossings} best={best_crossings}",
         flush=True,
     )
 
@@ -622,7 +642,7 @@ def run_inference(
     h.H = best_H
     h.V = best_V
     current_crossings = best_crossings
-    phase0_ops = len(best_sequence)
+    # phase0_ops already set to phase0_accepted on line above
     # Don't carry Phase 0 ops into the model sequence — start fresh.
     # Phase 0 is preprocessing; model efficiency measured separately.
     sequence = []
