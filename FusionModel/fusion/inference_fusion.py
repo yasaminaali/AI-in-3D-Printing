@@ -529,6 +529,11 @@ def run_inference(
     phase0_T_min = 1.0  # don't cool too much — keep exploring
     phase0_accepted = 0
     phase0_sequence = []  # track all accepted ops for best-ever snapshot
+    phase0_valid = 0
+    phase0_succeeded = 0
+    phase0_improving = 0
+    phase0_worst_seen = initial_crossings
+    phase0_best_seen = initial_crossings
 
     if grid_h > 0 and grid_w > 0:
         for step in range(phase0_steps):
@@ -549,14 +554,18 @@ def run_inference(
             if not validate_action(op_type, px, py, variant, grid_w, grid_h):
                 continue
 
+            phase0_valid += 1
             saved = save_grid_state(h)
             success = apply_op(h, op_type, px, py, variant)
             if not success:
                 restore_grid_state(h, saved)
                 continue
 
+            phase0_succeeded += 1
             new_crossings = compute_crossings(h, zones_np)
             delta = new_crossings - current_crossings
+            if delta < 0:
+                phase0_improving += 1
 
             # SA acceptance
             if delta <= 0 or (np.random.random() < np.exp(-delta / max(T, 1e-10))):
@@ -569,6 +578,11 @@ def run_inference(
                 current_crossings = new_crossings
                 phase0_accepted += 1
 
+                if current_crossings > phase0_worst_seen:
+                    phase0_worst_seen = current_crossings
+                if current_crossings < phase0_best_seen:
+                    phase0_best_seen = current_crossings
+
                 if current_crossings < best_crossings:
                     best_crossings = current_crossings
                     best_H = [row[:] for row in h.H]
@@ -577,6 +591,13 @@ def run_inference(
                     best_history_list = []
             else:
                 restore_grid_state(h, saved)
+
+    print(
+        f"    P0 debug: steps={phase0_steps} valid={phase0_valid} succeeded={phase0_succeeded} "
+        f"accepted={phase0_accepted} improving={phase0_improving} "
+        f"range=[{phase0_best_seen},{phase0_worst_seen}] init={initial_crossings}",
+        flush=True,
+    )
 
     # Restore best state from Phase 0 before starting model-guided phase
     h.H = best_H
