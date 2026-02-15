@@ -521,10 +521,7 @@ def run_inference(
     # local minimum — no single operation reduces crossings. SA escapes by
     # random-walking through worse states until a better basin is found.
     # Model steps cost ~50-100ms each; random steps cost ~0.5ms.
-    # Scale steps with grid size: SA data shows 80x80 needs ~660 accepted ops,
-    # 100x100 needs ~3500. Since many random ops are invalid/rejected, we need
-    # ~10x more attempts than accepted ops needed.
-    phase0_steps = max(10000, initial_crossings * 100)
+    phase0_steps = 10000
     phase0_T_max = max(initial_crossings * 0.25, 5.0)  # aggressive exploration
     phase0_T_min = 1.0  # don't cool too much — keep exploring
     phase0_accepted = 0
@@ -625,8 +622,13 @@ def run_inference(
     h.H = best_H
     h.V = best_V
     current_crossings = best_crossings
-    sequence = list(best_sequence)
-    history_buffer = deque(best_history_list, maxlen=max_history)
+    phase0_ops = len(best_sequence)
+    # Don't carry Phase 0 ops into the model sequence — start fresh.
+    # Phase 0 is preprocessing; model efficiency measured separately.
+    sequence = []
+    history_buffer = deque(maxlen=max_history)
+    best_sequence = []
+    best_history_list = []
 
     phase0_reduction = initial_crossings - best_crossings
 
@@ -871,6 +873,7 @@ def run_inference(
         'cv_threshold': cv_threshold,
         'accepted_worse': accepted_worse,
         'phase0_reduction': phase0_reduction,
+        'phase0_ops': phase0_ops,
         'phase0_accepted': phase0_accepted,
     }
 
@@ -1067,6 +1070,8 @@ def evaluate_all_patterns(
         elapsed = _time.time() - t0
         eta = elapsed / (sample_idx + 1) * (total_samples - sample_idx - 1)
         p0_red = result.get('phase0_reduction', 0)
+        p0_ops = result.get('phase0_ops', 0)
+        model_ops = result['num_operations']
         init_c = result['initial_crossings']
         final_c = result['final_crossings']
         tgt_lo = result.get('target_lower', '?')
@@ -1074,8 +1079,8 @@ def evaluate_all_patterns(
         print(
             f"  [{sample_idx+1}/{total_samples}] {pattern} {grid_w}x{grid_h} | "
             f"{init_c}→{final_c} (SA:{sa_final}) target:[{tgt_lo},{tgt_hi}] | "
-            f"P0={p0_red} | ops={result['num_operations']} | CV={result.get('final_cv', 0):.2f} | "
-            f"target={in_target} | {sample_time:.1f}s | ETA {eta/60:.0f}m",
+            f"P0: -{p0_red} in {p0_ops}ops | model: -{result['reduction'] - p0_red} in {model_ops}ops | "
+            f"CV={result.get('final_cv', 0):.2f} | {in_target} | {sample_time:.1f}s",
             flush=True,
         )
 
