@@ -36,10 +36,7 @@ from fusion_model import FusionNet, VARIANT_REV, VARIANT_MAP, NUM_ACTIONS
 from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
-from rich.progress import (
-    Progress, SpinnerColumn, BarColumn, TextColumn,
-    TimeElapsedColumn, MofNCompleteColumn,
-)
+import time as _time
 from rich import box
 
 console = Console()
@@ -857,87 +854,82 @@ def evaluate_all_patterns(
     console.print(f"\n  Total test samples: [green]{total_samples}[/green]")
 
     all_results = []
+    t0 = _time.time()
 
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(),
-        MofNCompleteColumn(),
-        TextColumn("[cyan]{task.fields[status]}[/cyan]"),
-        TimeElapsedColumn(),
-        console=console,
-    ) as progress:
-        task = progress.add_task("Evaluating all patterns", total=total_samples, status="")
+    for sample_idx, (pattern, line) in enumerate(test_samples):
+        traj = json.loads(line.strip())
+        grid_w = traj.get('grid_W', 30)
+        grid_h = traj.get('grid_H', 30)
+        zones_np = np.array(traj['zone_grid']).reshape(grid_h, grid_w)
+        n_zones = len(set(zones_np.flatten().tolist()))
+        boundary_mask = compute_boundary_mask(zones_np, grid_h, grid_w)
 
-        for pattern, line in test_samples:
-            traj = json.loads(line.strip())
-            grid_w = traj.get('grid_W', 30)
-            grid_h = traj.get('grid_H', 30)
-            zones_np = np.array(traj['zone_grid']).reshape(grid_h, grid_w)
-            n_zones = len(set(zones_np.flatten().tolist()))
-            boundary_mask = compute_boundary_mask(zones_np, grid_h, grid_w)
+        sample_t0 = _time.time()
+        result = run_inference(
+            model=model,
+            zones_np=zones_np,
+            boundary_mask=boundary_mask,
+            grid_w=grid_w,
+            grid_h=grid_h,
+            zone_pattern=pattern,
+            max_history=max_history,
+            max_steps=max_steps,
+            n_candidates=n_candidates,
+            n_random=n_random,
+            device=device,
+        )
+        sample_time = _time.time() - sample_t0
 
-            result = run_inference(
-                model=model,
-                zones_np=zones_np,
-                boundary_mask=boundary_mask,
-                grid_w=grid_w,
-                grid_h=grid_h,
-                zone_pattern=pattern,
-                max_history=max_history,
-                max_steps=max_steps,
-                n_candidates=n_candidates,
-                n_random=n_random,
-                device=device,
-            )
+        # SA baseline
+        sa_initial = traj.get('initial_crossings', result['initial_crossings'])
+        sa_final = traj.get('final_crossings', result['final_crossings'])
+        sa_reduction = sa_initial - sa_final if sa_initial else 0
+        n_sa_ops = len(traj.get('sequence_ops', []))
+        n_sa_effective = sum(
+            1 for op in traj.get('sequence_ops', []) if op.get('kind') != 'N'
+        )
 
-            # SA baseline
-            sa_initial = traj.get('initial_crossings', result['initial_crossings'])
-            sa_final = traj.get('final_crossings', result['final_crossings'])
-            sa_reduction = sa_initial - sa_final if sa_initial else 0
-            n_sa_ops = len(traj.get('sequence_ops', []))
-            n_sa_effective = sum(
-                1 for op in traj.get('sequence_ops', []) if op.get('kind') != 'N'
-            )
+        result['sa_initial'] = sa_initial
+        result['sa_final'] = sa_final
+        result['sa_reduction'] = sa_reduction
+        result['sa_reduction_pct'] = (sa_reduction / sa_initial * 100) if sa_initial and sa_initial > 0 else 0
+        result['sa_ops'] = n_sa_ops
+        result['sa_effective_ops'] = n_sa_effective
+        result['zone_pattern'] = pattern
+        result['grid_size'] = f"{grid_w}x{grid_h}"
+        result['n_zones'] = n_zones
 
-            result['sa_initial'] = sa_initial
-            result['sa_final'] = sa_final
-            result['sa_reduction'] = sa_reduction
-            result['sa_reduction_pct'] = (sa_reduction / sa_initial * 100) if sa_initial and sa_initial > 0 else 0
-            result['sa_ops'] = n_sa_ops
-            result['sa_effective_ops'] = n_sa_effective
-            result['zone_pattern'] = pattern
-            result['grid_size'] = f"{grid_w}x{grid_h}"
-            result['n_zones'] = n_zones
+        all_results.append(result)
 
-            all_results.append(result)
+        if visualize:
+            os.makedirs(vis_dir, exist_ok=True)
+            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 7))
+            init_pat = _infer_init_pattern(pattern, zones_np, grid_w, grid_h)
+            h_init = HamiltonianSTL(grid_w, grid_h, init_pattern=init_pat)
+            plot_cycle_on_ax(ax1, h_init, zones_np,
+                             f"Initial (crossings={result['initial_crossings']})")
+            plot_cycle_on_ax(ax2, result['final_h'], zones_np,
+                             f"FusionNet v4 (crossings={result['final_crossings']}, "
+                             f"ops={result['num_operations']})")
+            fig.suptitle(
+                f"Sample {len(all_results)} | {pattern} | "
+                f"{result['grid_size']} | {n_zones} zones",
+                fontsize=14, fontweight='bold')
+            fig.tight_layout()
+            fig.savefig(os.path.join(vis_dir, f"{pattern}_{len(all_results)}.png"),
+                        dpi=200, bbox_inches='tight')
+            plt.close(fig)
 
-            if visualize:
-                os.makedirs(vis_dir, exist_ok=True)
-                fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 7))
-                init_pat = _infer_init_pattern(pattern, zones_np, grid_w, grid_h)
-                h_init = HamiltonianSTL(grid_w, grid_h, init_pattern=init_pat)
-                plot_cycle_on_ax(ax1, h_init, zones_np,
-                                 f"Initial (crossings={result['initial_crossings']})")
-                plot_cycle_on_ax(ax2, result['final_h'], zones_np,
-                                 f"FusionNet v3 (crossings={result['final_crossings']}, "
-                                 f"ops={result['num_operations']})")
-                fig.suptitle(
-                    f"Sample {len(all_results)} | {pattern} | "
-                    f"{result['grid_size']} | {n_zones} zones",
-                    fontsize=14, fontweight='bold')
-                fig.tight_layout()
-                fig.savefig(os.path.join(vis_dir, f"{pattern}_{len(all_results)}.png"),
-                            dpi=200, bbox_inches='tight')
-                plt.close(fig)
-
-            in_target = "Y" if result.get('in_target_range') else "N"
-            status = (
-                f"{pattern} | red={result['reduction']}/{result['sa_reduction']} "
-                f"| CV={result.get('final_cv', 0):.2f} "
-                f"| target={in_target} | ops={result['num_operations']}"
-            )
-            progress.update(task, advance=1, status=status)
+        in_target = "Y" if result.get('in_target_range') else "N"
+        elapsed = _time.time() - t0
+        eta = elapsed / (sample_idx + 1) * (total_samples - sample_idx - 1)
+        print(
+            f"  [{sample_idx+1}/{total_samples}] {pattern} {grid_w}x{grid_h} | "
+            f"red={result['reduction']}/{sa_reduction} ({result['reduction_pct']:.1f}%) | "
+            f"ops={result['num_operations']} | CV={result.get('final_cv', 0):.2f} | "
+            f"target={in_target} | {sample_time:.1f}s | ETA {eta/60:.0f}m",
+            flush=True,
+        )
 
     _display_all_pattern_results(all_results)
     return all_results
