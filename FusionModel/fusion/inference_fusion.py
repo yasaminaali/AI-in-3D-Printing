@@ -398,15 +398,16 @@ def plot_cycle_on_ax(ax, h, zones_np, title):
 
 def _get_candidate_positions(model, h_obj, zones_np, boundary_mask, grid_w, grid_h,
                              initial_crossings, history_buffer, dilated_mask, device,
-                             max_history=32, n_positions=10):
-    """Extract top-N positions from the ranking model's score map.
+                             max_history=32, n_positions=10, n_actions=3):
+    """Extract top-N positions + top-K actions from the ranking model.
 
     With K=1 (ranking-trained model), the score map directly indicates
-    crossing-reduction potential. Higher score = more likely to be productive.
-    Fewer but higher-quality proposals (10 instead of 50) since ranking model
-    is more targeted.
+    crossing-reduction potential. For each position, returns the top-K
+    predicted actions instead of brute-forcing all 12. With action accuracy
+    at 99.4%, top-3 captures the correct action almost always.
 
-    Returns list of (py, px, score) tuples, sorted by score descending.
+    Returns list of (py, px, score, top_actions) tuples, sorted by score desc.
+    top_actions is a list of variant strings (e.g. ['nl', 'sr', 'e']).
     """
     state = encode_state_9ch(zones_np, boundary_mask, h_obj, grid_w, grid_h, initial_crossings)
     state_batch = state.unsqueeze(0).to(device)
@@ -435,13 +436,20 @@ def _get_candidate_positions(model, h_obj, zones_np, boundary_mask, grid_w, grid
     n_top = min(n_positions, n_valid)
     topk_vals, topk_idx = scores_masked.topk(n_top)
 
+    # Extract per-position top actions from action head [1, 12, H, W]
     positions = []
     for i in range(n_top):
         flat_idx = topk_idx[i].item()
         score = topk_vals[i].item()
         py = flat_idx // MAX_GRID_SIZE
         px = flat_idx % MAX_GRID_SIZE
-        positions.append((py, px, score))
+
+        # Top-K actions at this position
+        act_scores = act_logits[0, :, py, px]  # [12]
+        top_act_idx = act_scores.topk(min(n_actions, 12)).indices.tolist()
+        top_actions = [VARIANT_REV[a] for a in top_act_idx]
+
+        positions.append((py, px, score, top_actions))
 
     return positions
 
@@ -533,24 +541,29 @@ def run_inference(
             # Add random positions from the ENTIRE grid for exploration
             # (not just boundary — path restructuring far from boundary
             #  is needed to escape local optima in structured patterns)
+            # Random positions get all_variants since we have no action prediction
             if n_random > 0:
                 for _ in range(n_random):
                     py = np.random.randint(0, grid_h)
                     px = np.random.randint(0, grid_w)
-                    positions.append((py, px, 0.0))
+                    positions.append((py, px, 0.0, all_variants))
 
             if not positions:
                 break
 
-            # Save state once, try ALL actions at each position
+            # Save state once, try predicted actions at each position
             saved_H = [row[:] for row in h.H]
             saved_V = [row[:] for row in h.V]
 
             best_delta = float('inf')
             best_op = None
 
-            for py, px, confidence in positions:
-                for variant in all_variants:
+            for pos_entry in positions:
+                py, px, confidence = pos_entry[0], pos_entry[1], pos_entry[2]
+                # Model positions have top-3 actions; random have all 12
+                variants_to_try = pos_entry[3] if len(pos_entry) > 3 else all_variants
+
+                for variant in variants_to_try:
                     op_type = 'T' if variant in TRANSPOSE_VARIANTS else 'F'
 
                     if not validate_action(op_type, px, py, variant, grid_w, grid_h):
@@ -663,8 +676,11 @@ def run_inference(
                 best_result = None
                 best_score = float('-inf')
 
-                for py, px, confidence in positions:
-                    for variant in all_variants:
+                for pos_entry in positions:
+                    py, px = pos_entry[0], pos_entry[1]
+                    variants_to_try = pos_entry[3] if len(pos_entry) > 3 else all_variants
+
+                    for variant in variants_to_try:
                         op_type = 'T' if variant in TRANSPOSE_VARIANTS else 'F'
                         if not validate_action(op_type, px, py, variant,
                                                grid_w, grid_h):
