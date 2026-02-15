@@ -69,12 +69,19 @@ CV_THRESHOLDS = {
 # ---------------------------------------------------------------------------
 
 def _infer_init_pattern(zone_pattern, zones_np, grid_w, grid_h):
-    """All existing dataset was generated with default zigzag (horizontal).
+    """Choose the best init pattern based on zone boundary orientation.
 
-    The SA code at the time of dataset generation used HamiltonianSTL(w, h)
-    without specifying init_pattern, which defaults to 'zigzag'. The 'auto'
-    logic was added later but the dataset was never regenerated.
+    The training data was generated with default 'zigzag' (horizontal), but
+    this creates a deep local minimum for patterns with vertical boundaries
+    (left_right, stripes). Using vertical_zigzag for these patterns avoids
+    the local minimum entirely — the path runs within zones and only crosses
+    boundaries at column transitions.
+
+    For training: still uses 'zigzag' (matches training data).
+    For inference: uses the optimal pattern per zone layout.
     """
+    if zone_pattern in ('left_right', 'stripes'):
+        return 'vertical_zigzag'
     return 'zigzag'
 
 
