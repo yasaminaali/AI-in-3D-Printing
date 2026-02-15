@@ -528,10 +528,7 @@ def run_inference(
     phase0_accepted = 0
     phase0_sequence = []  # track all accepted ops for best-ever snapshot
 
-    bpos = boundary_mask.nonzero(as_tuple=False)
-    n_bpos = len(bpos)
-
-    if n_bpos > 0:
+    if grid_h > 0 and grid_w > 0:
         for step in range(phase0_steps):
             # Early exit if we've escaped well
             if best_crossings <= target_upper:
@@ -540,9 +537,10 @@ def run_inference(
             progress = step / max(phase0_steps - 1, 1)
             T = phase0_T_max * (phase0_T_min / phase0_T_max) ** progress
 
-            # Random boundary position + random action
-            idx = np.random.randint(0, n_bpos)
-            py, px = bpos[idx, 0].item(), bpos[idx, 1].item()
+            # Random position from ENTIRE grid (not just boundary)
+            # Path restructuring far from boundary is needed to escape local optima
+            py = np.random.randint(0, grid_h)
+            px = np.random.randint(0, grid_w)
             variant = all_variants[np.random.randint(0, len(all_variants))]
             op_type = 'T' if variant in TRANSPOSE_VARIANTS else 'F'
 
