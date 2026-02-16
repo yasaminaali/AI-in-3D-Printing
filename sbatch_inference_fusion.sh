@@ -102,7 +102,9 @@ echo ""
 PYTHONPATH="$(pwd):$PYTHONPATH" python3 FusionModel/fusion/inference_fusion.py \
     --checkpoint "$CHECKPOINT" \
     --jsonl "$TEST_JSONL" \
-    --n_per_pattern "$N_PER_PATTERN"
+    --n_per_pattern "$N_PER_PATTERN" \
+    --visualize \
+    --vis_dir "FusionModel/nn_checkpoints/fusion/vis"
 
 EXIT_CODE=$?
 
@@ -111,6 +113,7 @@ echo "=============================================="
 echo "  Inference finished at $(date)"
 echo "  Exit code: $EXIT_CODE"
 echo "  Results: FusionModel/nn_checkpoints/fusion/inference_results.json"
+echo "  Visualizations: FusionModel/nn_checkpoints/fusion/vis/"
 echo "=============================================="
 
 exit $EXIT_CODE
