@@ -195,12 +195,12 @@ def build_history_tensors(history_buffer, max_history, initial_crossings, device
 # ---------------------------------------------------------------------------
 
 def _sa_optimize(h, zones_np, grid_w, grid_h, target_upper, max_steps=3000,
-                 time_limit=15.0):
-    """Light SA fallback when model can't reach target.
+                 time_limit=15.0, restore_best=True):
+    """Light SA fallback / perturbation.
 
-    NOT the main optimizer — just a safety net. The model should do 85%+ of
-    the work once trained on sufficient data. This SA only handles edge cases
-    where the model is 1-2 operations short of the target range.
+    When restore_best=True (default): restores to best state found (optimization).
+    When restore_best=False: keeps final explored state (perturbation for
+    alternating model-SA loop — changes the state to escape local minima).
 
     Stops early on target reached, stagnation, or time limit.
     Time limit starts AFTER move pool generation.
@@ -291,12 +291,14 @@ def _sa_optimize(h, zones_np, grid_w, grid_h, target_upper, max_steps=3000,
             _restore_edges_snapshot(h, snap)
             steps_since_improvement += 1
 
-    h.H = best_H
-    h.V = best_V
+    if restore_best:
+        h.H = best_H
+        h.V = best_V
+    # else: keep current (explored) state for perturbation
     elapsed = _time.time() - t_start
     print(
         f"    SA: {actual_steps} steps, {accepted} accepted, "
-        f"best={best}, {elapsed:.1f}s",
+        f"best={best}, now={current}, {elapsed:.1f}s",
         flush=True,
     )
     return best, accepted
@@ -542,24 +544,25 @@ def run_inference(
     all_sequence = []
     all_crossings_history = [current_crossings]
 
-    # Global state tracking across model-SA cycles
+    # Global best tracking (survives SA perturbation)
     history_buffer = deque(maxlen=max_history)
-    best_crossings = current_crossings
-    best_H = [row[:] for row in h.H]
-    best_V = [row[:] for row in h.V]
+    global_best_crossings = current_crossings
+    global_best_H = [row[:] for row in h.H]
+    global_best_V = [row[:] for row in h.V]
     total_attempts = 0
     invalid_count = 0
     accepted_worse = 0
 
     # ---- Alternating model-SA loop ----
-    # Model runs until stagnation, then light SA shakes state out of local
-    # minimum, then model runs again on the new state.  Stops when target
-    # reached or a full cycle (model+SA) makes zero progress.
+    # Model runs until completely stuck, then SA PERTURBS the state (does NOT
+    # restore to best — keeps explored state to escape local minimum).  Model
+    # then runs again from the perturbed state.  Global best is tracked
+    # separately and restored at the end.
     max_cycles = 5
     for cycle in range(max_cycles):
-        if best_crossings <= trim_target:
+        if global_best_crossings <= trim_target:
             break
-        crossings_at_cycle_start = best_crossings
+        global_best_at_cycle_start = global_best_crossings
 
         # ---- Model phase ----
         sequence = []
@@ -570,7 +573,7 @@ def run_inference(
         model.eval()
         with torch.no_grad():
             while True:
-                if best_crossings <= trim_target:
+                if global_best_crossings <= trim_target:
                     break
                 if steps_without_improvement >= stagnation_limit:
                     break
@@ -668,10 +671,10 @@ def run_inference(
                     if delta > 0:
                         accepted_worse += 1
 
-                    if current_crossings < best_crossings:
-                        best_crossings = current_crossings
-                        best_H = [row[:] for row in h.H]
-                        best_V = [row[:] for row in h.V]
+                    if current_crossings < global_best_crossings:
+                        global_best_crossings = current_crossings
+                        global_best_H = [row[:] for row in h.H]
+                        global_best_V = [row[:] for row in h.V]
                         steps_without_improvement = 0
                     else:
                         steps_without_improvement += 1
@@ -681,15 +684,10 @@ def run_inference(
                             f"  Cycle {cycle+1} step {step} [T={T:.2f}]: "
                             f"{op_type}({variant}) at ({px},{py}) "
                             f"delta={delta:+d} -> crossings={current_crossings} "
-                            f"(best={best_crossings})"
+                            f"(best={global_best_crossings})"
                         )
                 else:
                     steps_without_improvement += 1
-
-        # Restore best-ever state from model phase
-        h.H = [row[:] for row in best_H]
-        h.V = [row[:] for row in best_V]
-        current_crossings = best_crossings
 
         # Accumulate model ops
         all_sequence.extend(sequence)
@@ -697,48 +695,68 @@ def run_inference(
             [op['crossings_after'] for op in sequence]
         )
 
-        model_red = initial_crossings - best_crossings
+        model_red = initial_crossings - global_best_crossings
 
-        if best_crossings <= trim_target:
+        if global_best_crossings <= trim_target:
             print(
                 f"    Cycle {cycle+1}: Model reached target "
-                f"(best={best_crossings}, need<={trim_target})",
+                f"(best={global_best_crossings}, need<={trim_target})",
                 flush=True,
             )
             break
 
-        # ---- Light SA phase ----
+        # ---- SA perturbation phase ----
+        # Restore to global best before SA explores from the best-known state.
+        # SA runs with restore_best=False so it KEEPS its explored state,
+        # giving the model a different starting point next cycle.
+        h.H = [row[:] for row in global_best_H]
+        h.V = [row[:] for row in global_best_V]
+        current_crossings = global_best_crossings
+
         print(
             f"    Cycle {cycle+1}: Model -{model_red} "
-            f"(best={best_crossings}, need<={trim_target}). Light SA...",
+            f"(best={global_best_crossings}, need<={trim_target}). "
+            f"SA perturbation...",
             flush=True,
         )
-        sa_before = current_crossings
         escape_best, escape_accepted = _sa_optimize(
             h, zones_np, grid_w, grid_h,
             target_upper=trim_target,
+            restore_best=False,  # keep explored state for perturbation
         )
         current_crossings = compute_crossings(h, zones_np)
-        if current_crossings < best_crossings:
-            best_crossings = current_crossings
-            best_H = [row[:] for row in h.H]
-            best_V = [row[:] for row in h.V]
+
+        # Update global best if SA found something better
+        if current_crossings < global_best_crossings:
+            global_best_crossings = current_crossings
+            global_best_H = [row[:] for row in h.H]
+            global_best_V = [row[:] for row in h.V]
+            sa_escape_used = True
+        elif escape_best < global_best_crossings:
+            # SA found a better state during exploration but wandered away;
+            # this shouldn't happen with restore_best=False since we track
+            # best separately, but handle it just in case
+            global_best_crossings = escape_best
             sa_escape_used = True
 
-        sa_red = sa_before - current_crossings
         print(
-            f"    Cycle {cycle+1}: SA -{sa_red} "
-            f"(now={current_crossings})",
+            f"    Cycle {cycle+1}: SA explored to {current_crossings} "
+            f"(global best={global_best_crossings})",
             flush=True,
         )
 
-        # Stop if this full cycle made no progress
-        if best_crossings >= crossings_at_cycle_start:
+        # Stop if global best hasn't improved in 2 consecutive cycles
+        if cycle >= 1 and global_best_crossings >= global_best_at_cycle_start:
             print(
-                f"    Cycle {cycle+1}: No progress, stopping alternation.",
+                f"    Cycle {cycle+1}: No global improvement, stopping.",
                 flush=True,
             )
             break
+
+    # Restore global best state
+    h.H = [row[:] for row in global_best_H]
+    h.V = [row[:] for row in global_best_V]
+    current_crossings = global_best_crossings
 
     # ---- Phase 2: Greedy redistribution ----
     redistribution_steps = 0
