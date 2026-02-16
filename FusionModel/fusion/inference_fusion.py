@@ -168,6 +168,92 @@ def build_history_tensors(history_buffer, max_history, initial_crossings, device
 
 
 # ---------------------------------------------------------------------------
+# Light SA escape (fallback when model is completely stuck)
+# ---------------------------------------------------------------------------
+
+def _light_sa_escape(h, zones_np, grid_w, grid_h, target_upper, max_steps=1000):
+    """Light SA escape — only used when model produces 0 ops.
+
+    Uses SA move pool for efficient random walk with high temperature.
+    Lazy-imports SA_generation to avoid loading it for constructive patterns.
+    """
+    from SA_generation import (
+        refresh_move_pool, apply_move,
+        _snapshot_edges_for_move, _restore_edges_snapshot,
+        dynamic_temperature,
+        compute_crossings as sa_compute_crossings,
+    )
+    import random as _random
+
+    zones_dict = {(x, y): int(zones_np[y, x])
+                  for y in range(grid_h) for x in range(grid_w)}
+    current = sa_compute_crossings(h, zones_dict)
+    best = current
+    best_H = [row[:] for row in h.H]
+    best_V = [row[:] for row in h.V]
+
+    move_pool = refresh_move_pool(
+        h, zones_dict, bias_to_boundary=True,
+        max_moves=5000, allowed_ops={"transpose", "flip"},
+        border_to_inner=True,
+    )
+
+    T_max = 50.0
+    T_min = 0.5
+    accepted = 0
+
+    for step in range(max_steps):
+        if best <= target_upper:
+            break
+
+        if step > 0 and step % 200 == 0:
+            move_pool = refresh_move_pool(
+                h, zones_dict, bias_to_boundary=True,
+                max_moves=5000, allowed_ops={"transpose", "flip"},
+                border_to_inner=True,
+            )
+
+        T = dynamic_temperature(step, max_steps, Tmin=T_min, Tmax=T_max)
+
+        if not move_pool:
+            continue
+
+        mv = _random.choice(move_pool)
+        snap = _snapshot_edges_for_move(h, mv)
+        if apply_move(h, mv):
+            new = sa_compute_crossings(h, zones_dict)
+            delta = new - current
+
+            if delta < 0:
+                accept = True
+            elif T > 0:
+                xexp = max(-700.0, min(700.0, -float(delta) / float(T)))
+                accept = (_random.random() < np.exp(xexp))
+            else:
+                accept = False
+
+            if accept:
+                current = new
+                accepted += 1
+                if current < best:
+                    best = current
+                    best_H = [row[:] for row in h.H]
+                    best_V = [row[:] for row in h.V]
+            else:
+                _restore_edges_snapshot(h, snap)
+        else:
+            _restore_edges_snapshot(h, snap)
+
+    h.H = best_H
+    h.V = best_V
+    print(
+        f"    SA escape: {max_steps} steps, {accepted} accepted, best={best}",
+        flush=True,
+    )
+    return best, accepted
+
+
+# ---------------------------------------------------------------------------
 # Visualization
 # ---------------------------------------------------------------------------
 
@@ -357,7 +443,7 @@ def run_inference(
             'strategy': 'constructive',
         }
 
-    # ========== MODEL-ONLY PATH (no SA Phase 0) ==========
+    # ========== MODEL-ONLY PATH (with SA escape fallback) ==========
     current_crossings = initial_crossings
 
     dilated_mask = dilate_mask(boundary_mask, dilation=1)
@@ -365,141 +451,165 @@ def run_inference(
     valid_area[:grid_h, :grid_w] = 1.0
     dilated_mask = (dilated_mask * valid_area).to(device)
 
-    history_buffer = deque(maxlen=max_history)
-    sequence = []
-    crossings_history = [initial_crossings]
-
-    # SA temperature schedule
-    T_max = max(initial_crossings * 0.15, 3.0)
-    T_min = 0.01
-
-    # Best-ever state tracking
-    best_crossings = initial_crossings
-    best_H = [row[:] for row in h.H]
-    best_V = [row[:] for row in h.V]
-    best_sequence = []
-    best_history_list = []
-
     all_variants = list(VARIANT_MAP.keys())
-    total_attempts = 0
-    invalid_count = 0
-    accepted_worse = 0
+    T_min = 0.01
+    sa_escape_used = False
 
-    # ---- Phase 1: Model-guided SA exploration (no Phase 0) ----
-    model.eval()
-    with torch.no_grad():
-        for step in range(max_steps):
-            if best_crossings <= target_lower:
-                break
+    # ---- Phase 1: Model-guided (retry once after SA escape if stuck) ----
+    for _attempt in range(2):
+        history_buffer = deque(maxlen=max_history)
+        sequence = []
+        crossings_history = [current_crossings]
+        T_max = max(current_crossings * 0.15, 3.0)
 
-            progress = step / max(max_steps - 1, 1)
-            T = T_max * (T_min / T_max) ** progress
+        best_crossings = current_crossings
+        best_H = [row[:] for row in h.H]
+        best_V = [row[:] for row in h.V]
+        best_sequence = []
+        best_history_list = []
 
-            positions = _get_candidate_positions(
-                model, h, zones_np, boundary_mask, grid_w, grid_h,
-                initial_crossings, history_buffer, dilated_mask, device,
-                max_history=max_history, n_positions=n_candidates,
+        total_attempts = 0
+        invalid_count = 0
+        accepted_worse = 0
+
+        model.eval()
+        with torch.no_grad():
+            for step in range(max_steps):
+                if best_crossings <= target_lower:
+                    break
+
+                progress = step / max(max_steps - 1, 1)
+                T = T_max * (T_min / T_max) ** progress
+
+                positions = _get_candidate_positions(
+                    model, h, zones_np, boundary_mask, grid_w, grid_h,
+                    initial_crossings, history_buffer, dilated_mask, device,
+                    max_history=max_history, n_positions=n_candidates,
+                )
+
+                if n_random > 0:
+                    for _ in range(n_random):
+                        py = np.random.randint(0, grid_h)
+                        px = np.random.randint(0, grid_w)
+                        positions.append((py, px, 0.0, all_variants))
+
+                if not positions:
+                    break
+
+                saved_H = [row[:] for row in h.H]
+                saved_V = [row[:] for row in h.V]
+
+                best_delta = float('inf')
+                best_op = None
+
+                for pos_entry in positions:
+                    py, px, confidence = pos_entry[0], pos_entry[1], pos_entry[2]
+                    variants_to_try = pos_entry[3] if len(pos_entry) > 3 else all_variants
+
+                    for variant in variants_to_try:
+                        op_type = 'T' if variant in TRANSPOSE_VARIANTS else 'F'
+
+                        if not validate_action(op_type, px, py, variant, grid_w, grid_h):
+                            continue
+
+                        total_attempts += 1
+
+                        h.H = [row[:] for row in saved_H]
+                        h.V = [row[:] for row in saved_V]
+
+                        success = apply_op(h, op_type, px, py, variant)
+                        if not success:
+                            invalid_count += 1
+                            continue
+
+                        new_crossings = compute_crossings(h, zones_np)
+                        delta = new_crossings - current_crossings
+
+                        if delta < best_delta:
+                            best_delta = delta
+                            best_op = (new_crossings, op_type, px, py, variant)
+
+                h.H = [row[:] for row in saved_H]
+                h.V = [row[:] for row in saved_V]
+
+                if best_op is None:
+                    continue
+
+                new_crossings, op_type, px, py, variant = best_op
+                delta = new_crossings - current_crossings
+
+                if delta <= 0:
+                    accept = True
+                else:
+                    accept = (np.random.random() < np.exp(-delta / max(T, 1e-10)))
+
+                if accept:
+                    apply_op(h, op_type, px, py, variant)
+
+                    sequence.append({
+                        'kind': op_type, 'x': px, 'y': py,
+                        'variant': variant,
+                        'crossings_before': current_crossings,
+                        'crossings_after': new_crossings,
+                    })
+                    history_buffer.append({
+                        'action': VARIANT_MAP.get(variant, 0),
+                        'py': min(py, grid_h - 1),
+                        'px': min(px, grid_w - 1),
+                        'cb': current_crossings,
+                        'ca': new_crossings,
+                    })
+                    current_crossings = new_crossings
+                    crossings_history.append(current_crossings)
+
+                    if delta > 0:
+                        accepted_worse += 1
+
+                    if current_crossings < best_crossings:
+                        best_crossings = current_crossings
+                        best_H = [row[:] for row in h.H]
+                        best_V = [row[:] for row in h.V]
+                        best_sequence = [op.copy() for op in sequence]
+                        best_history_list = list(history_buffer)
+
+                    if verbose and step % 50 == 0:
+                        console.print(
+                            f"  Step {step+1} [T={T:.2f}]: "
+                            f"{op_type}({variant}) at ({px},{py}) "
+                            f"delta={delta:+d} -> crossings={current_crossings} "
+                            f"(best={best_crossings})"
+                        )
+
+        # Restore best-ever state from this attempt
+        h.H = best_H
+        h.V = best_V
+        current_crossings = best_crossings
+        sequence = best_sequence
+        history_buffer = deque(best_history_list, maxlen=max_history)
+
+        # If model worked or this is already the retry, proceed to Phase 2
+        if len(sequence) > 0 or _attempt > 0:
+            break
+
+        # Model completely stuck — light SA escape, then retry
+        if current_crossings > target_upper:
+            print(
+                f"    Model stuck (0 ops). Light SA escape...",
+                flush=True,
             )
-
-            if n_random > 0:
-                for _ in range(n_random):
-                    py = np.random.randint(0, grid_h)
-                    px = np.random.randint(0, grid_w)
-                    positions.append((py, px, 0.0, all_variants))
-
-            if not positions:
-                break
-
-            saved_H = [row[:] for row in h.H]
-            saved_V = [row[:] for row in h.V]
-
-            best_delta = float('inf')
-            best_op = None
-
-            for pos_entry in positions:
-                py, px, confidence = pos_entry[0], pos_entry[1], pos_entry[2]
-                variants_to_try = pos_entry[3] if len(pos_entry) > 3 else all_variants
-
-                for variant in variants_to_try:
-                    op_type = 'T' if variant in TRANSPOSE_VARIANTS else 'F'
-
-                    if not validate_action(op_type, px, py, variant, grid_w, grid_h):
-                        continue
-
-                    total_attempts += 1
-
-                    h.H = [row[:] for row in saved_H]
-                    h.V = [row[:] for row in saved_V]
-
-                    success = apply_op(h, op_type, px, py, variant)
-                    if not success:
-                        invalid_count += 1
-                        continue
-
-                    new_crossings = compute_crossings(h, zones_np)
-                    delta = new_crossings - current_crossings
-
-                    if delta < best_delta:
-                        best_delta = delta
-                        best_op = (new_crossings, op_type, px, py, variant)
-
-            h.H = [row[:] for row in saved_H]
-            h.V = [row[:] for row in saved_V]
-
-            if best_op is None:
-                continue
-
-            new_crossings, op_type, px, py, variant = best_op
-            delta = new_crossings - current_crossings
-
-            if delta <= 0:
-                accept = True
+            escape_best, escape_accepted = _light_sa_escape(
+                h, zones_np, grid_w, grid_h,
+                target_upper=target_upper,
+                max_steps=1000,
+            )
+            if escape_accepted > 0:
+                current_crossings = compute_crossings(h, zones_np)
+                sa_escape_used = True
+                continue  # retry Phase 1 from escaped state
             else:
-                accept = (np.random.random() < np.exp(-delta / max(T, 1e-10)))
-
-            if accept:
-                apply_op(h, op_type, px, py, variant)
-
-                sequence.append({
-                    'kind': op_type, 'x': px, 'y': py,
-                    'variant': variant,
-                    'crossings_before': current_crossings,
-                    'crossings_after': new_crossings,
-                })
-                history_buffer.append({
-                    'action': VARIANT_MAP.get(variant, 0),
-                    'py': min(py, grid_h - 1),
-                    'px': min(px, grid_w - 1),
-                    'cb': current_crossings,
-                    'ca': new_crossings,
-                })
-                current_crossings = new_crossings
-                crossings_history.append(current_crossings)
-
-                if delta > 0:
-                    accepted_worse += 1
-
-                if current_crossings < best_crossings:
-                    best_crossings = current_crossings
-                    best_H = [row[:] for row in h.H]
-                    best_V = [row[:] for row in h.V]
-                    best_sequence = [op.copy() for op in sequence]
-                    best_history_list = list(history_buffer)
-
-                if verbose and step % 50 == 0:
-                    console.print(
-                        f"  Step {step+1} [T={T:.2f}]: "
-                        f"{op_type}({variant}) at ({px},{py}) "
-                        f"delta={delta:+d} -> crossings={current_crossings} "
-                        f"(best={best_crossings})"
-                    )
-
-    # Restore best-ever state
-    h.H = best_H
-    h.V = best_V
-    current_crossings = best_crossings
-    sequence = best_sequence
-    history_buffer = deque(best_history_list, maxlen=max_history)
+                break  # SA also stuck, give up
+        else:
+            break  # already in target range despite 0 ops
 
     # ---- Phase 2: Greedy redistribution ----
     redistribution_steps = 0
@@ -612,6 +722,7 @@ def run_inference(
         'cv_threshold': cv_threshold,
         'accepted_worse': accepted_worse,
         'strategy': 'model',
+        'sa_escape_used': sa_escape_used,
     }
 
 
@@ -833,10 +944,11 @@ def evaluate_all_patterns(
             )
         else:
             red = result.get('reduction', 0)
+            esc = "+esc" if result.get('sa_escape_used') else ""
             print(
                 f"  [{sample_idx+1}/{total_samples}] {pattern} {grid_w}x{grid_h} | "
                 f"{init_c}->{final_c} (SA:{sa_final}) target:[{tgt_lo},{tgt_hi}] | "
-                f"model: -{red} in {n_ops}ops | "
+                f"model{esc}: -{red} in {n_ops}ops | "
                 f"CV={result.get('final_cv', 0):.2f} | {in_target} | {sample_time:.1f}s",
                 flush=True,
             )
