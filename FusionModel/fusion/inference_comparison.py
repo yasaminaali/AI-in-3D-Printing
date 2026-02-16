@@ -45,7 +45,7 @@ import time as _time
 
 console = Console()
 
-ALL_PATTERNS = ['left_right', 'stripes', 'voronoi', 'islands']
+ALL_PATTERNS = ['voronoi', 'islands']
 
 
 # ---------------------------------------------------------------------------
