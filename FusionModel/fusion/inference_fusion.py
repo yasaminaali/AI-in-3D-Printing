@@ -171,8 +171,8 @@ def build_history_tensors(history_buffer, max_history, initial_crossings, device
 # Light SA escape (fallback when model is completely stuck)
 # ---------------------------------------------------------------------------
 
-def _sa_optimize(h, zones_np, grid_w, grid_h, target_upper, max_steps=3000,
-                 time_limit=45.0):
+def _sa_optimize(h, zones_np, grid_w, grid_h, target_upper, max_steps=8000,
+                 time_limit=60.0):
     """SA optimization for voronoi/islands when model can't reach target.
 
     Uses SA move pool with proper temperature schedule.
@@ -195,7 +195,7 @@ def _sa_optimize(h, zones_np, grid_w, grid_h, target_upper, max_steps=3000,
     best_H = [row[:] for row in h.H]
     best_V = [row[:] for row in h.V]
 
-    pool_size = min(3000, grid_w * grid_h * 2)
+    pool_size = min(5000, grid_w * grid_h * 3)
     move_pool = refresh_move_pool(
         h, zones_dict, bias_to_boundary=True,
         max_moves=pool_size, allowed_ops={"transpose", "flip"},
@@ -205,13 +205,13 @@ def _sa_optimize(h, zones_np, grid_w, grid_h, target_upper, max_steps=3000,
     # Start timer AFTER pool generation (pool gen can take 10-20s on large grids)
     t_start = _time.time()
 
-    T_max = 50.0
+    T_max = max(80.0, current * 0.5)
     T_min = 0.5
     accepted = 0
     steps_since_improvement = 0
-    stagnation_limit = 300
+    stagnation_limit = 800
     actual_steps = 0
-    refresh_interval = 500
+    refresh_interval = 400
 
     for step in range(max_steps):
         if best <= target_upper:
@@ -498,7 +498,7 @@ def run_inference(
     all_variants = list(VARIANT_MAP.keys())
     T_min = 0.01
     sa_escape_used = False
-    stagnation_limit = 100  # stop after 100 steps with no improvement
+    stagnation_limit = 150  # stop after 150 steps with no improvement
 
     # Aim for lower end of target range (more reduction), like constructive
     trim_target = target_lower + (target_upper - target_lower) // 4
