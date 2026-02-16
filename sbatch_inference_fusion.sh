@@ -27,7 +27,7 @@
 #=============================================================
 
 echo "=============================================="
-echo "  FusionNet v3 — Proposal-Filter + SA Inference"
+echo "  FusionNet v5 — Constructive + Model-Only (No SA)"
 echo "  Job ID:    $SLURM_JOB_ID"
 echo "  Node:      $SLURM_NODELIST"
 echo "  GPUs:      $CUDA_VISIBLE_DEVICES"
