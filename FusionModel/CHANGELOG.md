@@ -28,8 +28,7 @@ Results: All grid sizes 30x30–100x100 hit target range, <3s, 11-39 ops, CV < 0
 #### Model-Guided Strategy (voronoi, islands)
 **File**: `FusionModel/fusion/inference_fusion.py`
 
-- **Phase 1 (model)**: Model predicts top-N positions + top-K actions. Boundary-biased random sampling for exploration (samples from dilated mask, not uniform grid). Scales random samples with grid size. Aims for `trim_target` (lower end of target range). Stagnation-based stopping (150 steps).
-- **Phase 1b (light SA)**: Safety net only — 3000 steps, 15s limit, stagnation at 300. NOT the main optimizer.
+- **Alternating model-SA loop** (up to 5 cycles): Model runs until stagnation (150 steps), then light SA (3000 steps, 15s) shakes state out of local minimum, then model runs again on the new state. Loop stops when target reached or a full cycle makes zero progress. SA is NOT the main optimizer — it just unsticks the model.
 - **Phase 2 (redistribution)**: Greedy CV uniformity improvement.
 
 #### Key Inference Fixes

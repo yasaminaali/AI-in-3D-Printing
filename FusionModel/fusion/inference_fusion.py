@@ -439,14 +439,14 @@ def run_inference(
         No model, no SA. Fast, deterministic.
 
     Model-guided (voronoi, islands):
-        Phase 1: Model predicts top-N positions + top-K actions per step.
-            Boundary-biased random sampling for exploration (all random
-            positions near boundaries, not wasted on grid interior).
-            Aims for trim_target = target_lower + (target_upper - target_lower) // 4.
-            Stagnation-based stopping (150 steps without improvement).
-        Phase 1b: Light SA fallback if model doesn't reach trim_target.
-            Safety net only — 3000 steps, 15s limit, stagnation at 300.
-            NOT the main optimizer; model should do 85%+ of the work.
+        Alternating model-SA loop (up to 5 cycles):
+            Model phase: Predicts top-N positions + top-K actions per step.
+                Boundary-biased random sampling for exploration.
+                Aims for trim_target (lower end of range).
+                Stagnation-based stopping (150 steps without improvement).
+            SA phase: Light SA (3000 steps, 15s) shakes state out of local
+                minimum so model can find new moves on next cycle.
+        Loop stops when target reached or a full cycle makes zero progress.
         Phase 2: Greedy redistribution for CV uniformity.
     """
     # --- Init pattern ---
@@ -538,37 +538,40 @@ def run_inference(
     # Aim for lower end of target range (more reduction), like constructive
     trim_target = target_lower + (target_upper - target_lower) // 4
 
-    # Accumulate all operations
+    # Accumulate all operations across all cycles
     all_sequence = []
     all_crossings_history = [current_crossings]
 
-    # ---- Phase 1: Model-guided reduction ----
-    _attempt = 0  # single attempt
-    if True:
-        history_buffer = deque(maxlen=max_history)
+    # Global state tracking across model-SA cycles
+    history_buffer = deque(maxlen=max_history)
+    best_crossings = current_crossings
+    best_H = [row[:] for row in h.H]
+    best_V = [row[:] for row in h.V]
+    total_attempts = 0
+    invalid_count = 0
+    accepted_worse = 0
+
+    # ---- Alternating model-SA loop ----
+    # Model runs until stagnation, then light SA shakes state out of local
+    # minimum, then model runs again on the new state.  Stops when target
+    # reached or a full cycle (model+SA) makes zero progress.
+    max_cycles = 5
+    for cycle in range(max_cycles):
+        if best_crossings <= trim_target:
+            break
+        crossings_at_cycle_start = best_crossings
+
+        # ---- Model phase ----
         sequence = []
-        crossings_history = [current_crossings]
         T_max = max(current_crossings * 0.15, 3.0)
-
-        best_crossings = current_crossings
-        best_H = [row[:] for row in h.H]
-        best_V = [row[:] for row in h.V]
-        best_sequence = []
-        best_history_list = []
-
-        total_attempts = 0
-        invalid_count = 0
-        accepted_worse = 0
         steps_without_improvement = 0
         step = 0
 
         model.eval()
         with torch.no_grad():
             while True:
-                # Stop if aggressive target reached
                 if best_crossings <= trim_target:
                     break
-                # Stop on stagnation
                 if steps_without_improvement >= stagnation_limit:
                     break
 
@@ -581,9 +584,7 @@ def run_inference(
                     max_history=max_history, n_positions=n_candidates,
                 )
 
-                # Boundary-biased random sampling: draw from dilated mask
-                # positions instead of uniform grid (all samples are near
-                # boundaries and thus potentially useful)
+                # Boundary-biased random sampling
                 if n_boundary > 0 and effective_n_random > 0:
                     rand_idx = np.random.choice(
                         n_boundary, size=min(effective_n_random, n_boundary),
@@ -663,7 +664,6 @@ def run_inference(
                         'ca': new_crossings,
                     })
                     current_crossings = new_crossings
-                    crossings_history.append(current_crossings)
 
                     if delta > 0:
                         accepted_worse += 1
@@ -672,15 +672,13 @@ def run_inference(
                         best_crossings = current_crossings
                         best_H = [row[:] for row in h.H]
                         best_V = [row[:] for row in h.V]
-                        best_sequence = [op.copy() for op in sequence]
-                        best_history_list = list(history_buffer)
                         steps_without_improvement = 0
                     else:
                         steps_without_improvement += 1
 
                     if verbose and step % 50 == 0:
                         console.print(
-                            f"  Step {step} [T={T:.2f}]: "
+                            f"  Cycle {cycle+1} step {step} [T={T:.2f}]: "
                             f"{op_type}({variant}) at ({px},{py}) "
                             f"delta={delta:+d} -> crossings={current_crossings} "
                             f"(best={best_crossings})"
@@ -689,35 +687,58 @@ def run_inference(
                     steps_without_improvement += 1
 
         # Restore best-ever state from model phase
-        h.H = best_H
-        h.V = best_V
+        h.H = [row[:] for row in best_H]
+        h.V = [row[:] for row in best_V]
         current_crossings = best_crossings
-        sequence = best_sequence
-        history_buffer = deque(best_history_list, maxlen=max_history)
 
-        # Accumulate operations from model phase
-        all_sequence.extend(best_sequence)
+        # Accumulate model ops
+        all_sequence.extend(sequence)
         all_crossings_history.extend(
-            [op['crossings_after'] for op in best_sequence]
+            [op['crossings_after'] for op in sequence]
         )
 
-    # ---- Phase 1b: SA optimization (main optimizer for voronoi/islands) ----
-    # Model provides a warm start; SA does the heavy lifting with enough
-    # steps to escape local minima through multi-step uphill exploration.
-    if current_crossings > trim_target:
-        model_red = initial_crossings - current_crossings
+        model_red = initial_crossings - best_crossings
+
+        if best_crossings <= trim_target:
+            print(
+                f"    Cycle {cycle+1}: Model reached target "
+                f"(best={best_crossings}, need<={trim_target})",
+                flush=True,
+            )
+            break
+
+        # ---- Light SA phase ----
         print(
-            f"    Model got -{model_red} but not in target "
-            f"(best={current_crossings}, need<={trim_target}). SA...",
+            f"    Cycle {cycle+1}: Model -{model_red} "
+            f"(best={best_crossings}, need<={trim_target}). Light SA...",
             flush=True,
         )
+        sa_before = current_crossings
         escape_best, escape_accepted = _sa_optimize(
             h, zones_np, grid_w, grid_h,
             target_upper=trim_target,
         )
         current_crossings = compute_crossings(h, zones_np)
-        if escape_best < initial_crossings:
+        if current_crossings < best_crossings:
+            best_crossings = current_crossings
+            best_H = [row[:] for row in h.H]
+            best_V = [row[:] for row in h.V]
             sa_escape_used = True
+
+        sa_red = sa_before - current_crossings
+        print(
+            f"    Cycle {cycle+1}: SA -{sa_red} "
+            f"(now={current_crossings})",
+            flush=True,
+        )
+
+        # Stop if this full cycle made no progress
+        if best_crossings >= crossings_at_cycle_start:
+            print(
+                f"    Cycle {cycle+1}: No progress, stopping alternation.",
+                flush=True,
+            )
+            break
 
     # ---- Phase 2: Greedy redistribution ----
     redistribution_steps = 0
