@@ -1,4 +1,88 @@
-# FusionNet v2 Changelog
+# FusionNet Changelog
+
+## FusionNet v5 — Constructive + Model-Guided Inference
+
+### Overview
+
+Two-strategy inference replacing the uniform SA-then-model pipeline:
+- **Constructive** (left_right, stripes): Deterministic, model-free, works for any k and grid size
+- **Model-guided** (voronoi, islands): Model is primary optimizer, light SA fallback
+
+### v5 Inference Changes
+
+#### Constructive Strategy (left_right, stripes)
+**File**: `FusionModel/fusion/constructive.py` (new standalone module)
+
+Two-phase approach for even crossing distribution:
+1. **Phase 1 (propagate)**: Start from optimal zigzag (k-1 crossings), greedily add crossings to cover FULL boundary length. Sequential ordering — does NOT stop at target.
+2. **Phase 2 (trim)**: Remove crossings using spread ordering (binary subdivision) to bring count into target range [60%-80% of max]. Targets lower end of range (~40% reduction from max).
+
+Key components:
+- `select_init_and_strategy()` — determines init pattern and strategy from zone layout
+- `detect_stripe_params()` — detects stripe direction (v/h) and k from zone grid
+- `constructive_add_crossings()` — core two-phase algorithm
+- `_spread_indices()` — binary subdivision ordering for even distribution
+
+Results: All grid sizes 30x30–100x100 hit target range, <3s, 11-39 ops, CV < 0.3.
+
+#### Model-Guided Strategy (voronoi, islands)
+**File**: `FusionModel/fusion/inference_fusion.py`
+
+- **Phase 1 (model)**: Model predicts top-N positions + top-K actions. Boundary-biased random sampling for exploration (samples from dilated mask, not uniform grid). Scales random samples with grid size. Aims for `trim_target` (lower end of target range). Stagnation-based stopping (150 steps).
+- **Phase 1b (light SA)**: Safety net only — 3000 steps, 15s limit, stagnation at 300. NOT the main optimizer.
+- **Phase 2 (redistribution)**: Greedy CV uniformity improvement.
+
+#### Key Inference Fixes
+- **Boundary-biased random sampling**: Random positions sample from dilated boundary mask instead of uniform grid. On 100x100, ~97% of uniform samples were far from boundaries and useless.
+- **Trim target**: Model aims for `target_lower + (target_upper - target_lower) // 4` (near lower end of range), not `target_upper`.
+- **Operation accumulation**: Operations tracked across all phases via `all_sequence`.
+
+### Current Model Limitations (Data-Dependent)
+
+The model's performance is limited by training data volume, NOT architecture:
+
+| Pattern | Grid Size | Trajectories | Model Performance |
+|---------|-----------|-------------|-------------------|
+| voronoi | 30x30 | 1,079 | Works on most samples |
+| voronoi | 50x50 | 903 | Partial — barely reaches target |
+| voronoi | 60x60 | 612 | Struggles — often stagnates |
+| voronoi | 80x80 | 1,306 | Fails on most samples |
+| voronoi | 100x100 | 212 | Fails — insufficient data |
+| islands | 30x30 | 691 | Works on most samples |
+| islands | 50x50 | 528 | Partial |
+| islands | 60x60 | 603 | Struggles |
+| islands | 80x80 | 502 | Fails on most samples |
+| islands | 100x100 | 203 | Fails — insufficient data |
+
+**What was verified (no bugs):**
+- Coordinate ordering: (x, y) vs (py, px) consistent between training and inference
+- Boundary mask computation: identical logic in training and inference
+- 9-channel encoding: matches between `fusion_dataset.py` and `inference_fusion.py`
+- Dilated mask: training loss mask and inference candidate mask both use dilation=1
+- Receptive field: 4-level U-Net + bottleneck self-attention gives global context
+- No hardcoded size dependencies beyond MAX_GRID_SIZE=128
+
+**What needs to happen for model to work on 60x60+:**
+- Generate ~1000+ SA trajectories per grid size for voronoi and islands
+- Rebuild dataset: `python FusionModel/fusion/build_fusion_data.py`
+- Retrain: `sbatch sbatch_train_fusion.sh`
+- The architecture, loss, and inference code are all ready — only data is the bottleneck
+
+### Files Modified in v5
+
+| File | Changes |
+|------|---------|
+| `FusionModel/fusion/constructive.py` | **New**. Standalone constructive module with two-phase propagate+trim. |
+| `FusionModel/fusion/inference_fusion.py` | Strategy branching, boundary-biased sampling, trim_target, light SA fallback, visualization colors. |
+| `FusionModel/fusion/__init__.py` | Updated exports for constructive module. |
+
+### Files NOT Modified in v5
+
+`fusion_model.py`, `train_fusion.py`, `fusion_dataset.py`, `build_fusion_data.py`, sbatch scripts, `SA_generation.py`.
+
+---
+
+## FusionNet v2 — Architecture Rewrite
 
 Complete rewrite to fix 86% failure rate. 18 changes across 5 files addressing data corruption, architecture limitations, loss design, inference strategy, and generalization.
 

@@ -1,11 +1,34 @@
 """
-FusionNet v5 Inference — Constructive + Model-Only (No SA).
+FusionNet v5 Inference — Constructive + Model-Guided.
 
-Two pattern-specific strategies, eliminating SA entirely:
-- Constructive (left_right, stripes): Start from optimal zigzag (k-1 crossings),
-  ADD crossings at boundary positions to target range. No model, no SA.
-- Model-only (voronoi, islands): Start from zigzag, model reduces crossings
-  directly. No SA Phase 0.
+Two pattern-specific strategies:
+
+1. Constructive (left_right, stripes):
+   - Start from optimal zigzag (k-1 crossings)
+   - Phase 1: propagate crossings to near-max coverage
+   - Phase 2: trim with spread ordering to target range [60%-80% of max]
+   - No model, no SA. Fast, deterministic. Works for any k, any grid size.
+
+2. Model-guided (voronoi, islands):
+   - Start from zigzag, model predicts positions + actions to reduce crossings
+   - Boundary-biased random sampling for exploration (not uniform grid)
+   - Aims for trim_target (lower end of target range, ~75% down)
+   - Light SA fallback when model stagnates (safety net, not main optimizer)
+   - Phase 2: greedy redistribution for CV uniformity
+
+Architecture: FusionNet (4-level ResU-Net + GRU history + FiLM conditioning)
+  - Input: 9-channel 128x128 (zones, H/V edges, validity, boundary, crossings,
+    progress, y_coord, x_coord)
+  - Output: position scores [K, 128, 128] + action logits [12, 128, 128]
+  - Trained on SA trajectory data via margin-based ranking loss
+
+Current model limitations (data-dependent, NOT architectural):
+  - Model works well on 30x30 with sufficient data (~1000+ trajectories)
+  - Performance degrades on 60x60+ due to limited training data
+  - voronoi 100x100: only 212 trajectories (needs ~1000+)
+  - islands 100x100: only 203 trajectories (needs ~1000+)
+  - No coordinate ordering bugs, mask mismatches, or architecture limitations
+  - Once retrained with more data, the model should handle all grid sizes
 
 Usage:
     PYTHONPATH=$(pwd):$PYTHONPATH python FusionModel/fusion/inference_fusion.py \\
@@ -171,15 +194,16 @@ def build_history_tensors(history_buffer, max_history, initial_crossings, device
 # Light SA escape (fallback when model is completely stuck)
 # ---------------------------------------------------------------------------
 
-def _sa_optimize(h, zones_np, grid_w, grid_h, target_upper, max_steps=30000,
-                 time_limit=90.0):
-    """SA optimization for voronoi/islands when model can't reach target.
+def _sa_optimize(h, zones_np, grid_w, grid_h, target_upper, max_steps=3000,
+                 time_limit=15.0):
+    """Light SA fallback when model can't reach target.
 
-    This is the MAIN optimizer for voronoi/islands — the model just provides
-    a warm start. Runs a serious SA with enough steps to escape local minima.
-    Lazy-imports SA_generation to avoid loading it for constructive patterns.
+    NOT the main optimizer — just a safety net. The model should do 85%+ of
+    the work once trained on sufficient data. This SA only handles edge cases
+    where the model is 1-2 operations short of the target range.
+
     Stops early on target reached, stagnation, or time limit.
-    Time limit starts AFTER move pool generation (which can be slow on large grids).
+    Time limit starts AFTER move pool generation.
     """
     from SA_generation import (
         refresh_move_pool, apply_move,
@@ -196,7 +220,7 @@ def _sa_optimize(h, zones_np, grid_w, grid_h, target_upper, max_steps=30000,
     best_H = [row[:] for row in h.H]
     best_V = [row[:] for row in h.V]
 
-    pool_size = min(5000, grid_w * grid_h * 3)
+    pool_size = min(3000, grid_w * grid_h * 2)
     move_pool = refresh_move_pool(
         h, zones_dict, bias_to_boundary=True,
         max_moves=pool_size, allowed_ops={"transpose", "flip"},
@@ -206,13 +230,13 @@ def _sa_optimize(h, zones_np, grid_w, grid_h, target_upper, max_steps=30000,
     # Start timer AFTER pool generation (pool gen can take 10-20s on large grids)
     t_start = _time.time()
 
-    T_max = max(100.0, current * 0.8)
-    T_min = 0.3
+    T_max = 50.0
+    T_min = 0.5
     accepted = 0
     steps_since_improvement = 0
-    stagnation_limit = 5000
+    stagnation_limit = 300
     actual_steps = 0
-    refresh_interval = 300
+    refresh_interval = 500
 
     for step in range(max_steps):
         if best <= target_upper:
@@ -414,11 +438,16 @@ def run_inference(
         positions until target range [60%-80% of max] is reached.
         No model, no SA. Fast, deterministic.
 
-    Model-only (voronoi, islands):
-        Start from zigzag, model reduces crossings directly.
-        Phase 1: model-guided SA exploration.
-        Phase 2: greedy redistribution for CV uniformity.
-        No SA Phase 0.
+    Model-guided (voronoi, islands):
+        Phase 1: Model predicts top-N positions + top-K actions per step.
+            Boundary-biased random sampling for exploration (all random
+            positions near boundaries, not wasted on grid interior).
+            Aims for trim_target = target_lower + (target_upper - target_lower) // 4.
+            Stagnation-based stopping (150 steps without improvement).
+        Phase 1b: Light SA fallback if model doesn't reach trim_target.
+            Safety net only — 3000 steps, 15s limit, stagnation at 300.
+            NOT the main optimizer; model should do 85%+ of the work.
+        Phase 2: Greedy redistribution for CV uniformity.
     """
     # --- Init pattern ---
     if strategy == 'constructive':
