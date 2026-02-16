@@ -758,6 +758,69 @@ def run_inference(
     h.V = [row[:] for row in global_best_V]
     current_crossings = global_best_crossings
 
+    # ---- Final sweep: brute-force when close to target ----
+    # When the model is within a few crossings of target_upper, try EVERY
+    # position in the dilated mask with ALL 12 variants.  Only runs when
+    # we're close — guarantees we don't miss a reduction due to sampling luck.
+    sweep_margin = max(5, int(target_upper * 0.05))  # within 5 or 5%
+    if current_crossings > target_upper and current_crossings <= target_upper + sweep_margin:
+        print(
+            f"    Final sweep: {current_crossings} within {sweep_margin} of "
+            f"target_upper={target_upper}, trying all positions...",
+            flush=True,
+        )
+        sweep_improved = True
+        sweep_ops = 0
+        while sweep_improved and current_crossings > trim_target:
+            sweep_improved = False
+            saved_H = [row[:] for row in h.H]
+            saved_V = [row[:] for row in h.V]
+            best_sweep_delta = 0
+            best_sweep_op = None
+
+            for py, px in _boundary_positions:
+                for variant in all_variants:
+                    op_type = 'T' if variant in TRANSPOSE_VARIANTS else 'F'
+                    if not validate_action(op_type, int(px), int(py), variant,
+                                           grid_w, grid_h):
+                        continue
+                    h.H = [row[:] for row in saved_H]
+                    h.V = [row[:] for row in saved_V]
+                    success = apply_op(h, op_type, int(px), int(py), variant)
+                    if not success:
+                        continue
+                    new_crossings = compute_crossings(h, zones_np)
+                    delta = new_crossings - current_crossings
+                    if delta < best_sweep_delta:
+                        best_sweep_delta = delta
+                        best_sweep_op = (new_crossings, op_type, int(px),
+                                         int(py), variant)
+
+            h.H = [row[:] for row in saved_H]
+            h.V = [row[:] for row in saved_V]
+
+            if best_sweep_op is not None:
+                nc, ot, px2, py2, var2 = best_sweep_op
+                apply_op(h, ot, px2, py2, var2)
+                all_sequence.append({
+                    'kind': ot, 'x': px2, 'y': py2, 'variant': var2,
+                    'crossings_before': current_crossings,
+                    'crossings_after': nc,
+                })
+                all_crossings_history.append(nc)
+                current_crossings = nc
+                sweep_improved = True
+                sweep_ops += 1
+
+        if sweep_ops > 0:
+            print(
+                f"    Final sweep: -{initial_crossings - current_crossings} "
+                f"total, {sweep_ops} ops, now={current_crossings}",
+                flush=True,
+            )
+        else:
+            print(f"    Final sweep: no reductions found.", flush=True)
+
     # ---- Phase 2: Greedy redistribution ----
     redistribution_steps = 0
     max_redistribution = 30
