@@ -979,11 +979,11 @@ def evaluate_all_patterns(
 
         if strat == 'constructive':
             max_c = result.get('max_crossings', '?')
-            delta_str = f"+{final_c - init_c}"
+            red_pct = (max_c - final_c) / max_c * 100 if isinstance(max_c, (int, float)) and max_c > 0 else 0
             print(
                 f"  [{sample_idx+1}/{total_samples}] {pattern} {grid_w}x{grid_h} | "
                 f"{init_c}->{final_c} (max:{max_c}) target:[{tgt_lo},{tgt_hi}] | "
-                f"constructive: {delta_str} in {n_ops}ops | "
+                f"constructive: {red_pct:.0f}%red in {n_ops}ops | "
                 f"CV={result.get('final_cv', 0):.2f} | {in_target} | {sample_time:.1f}s",
                 flush=True,
             )

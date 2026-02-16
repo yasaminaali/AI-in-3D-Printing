@@ -1,5 +1,12 @@
 """
-Constructive crossing addition for stripe and left_right zone patterns.
+Constructive crossing optimization for stripe and left_right zone patterns.
+
+Two-phase approach for even distribution:
+  Phase 1 (propagate): Start from optimal zigzag (k-1 crossings), greedily
+    propagate crossings to cover the FULL boundary length (near-max crossings).
+  Phase 2 (trim): Selectively remove crossings using spread ordering (binary
+    subdivision) to bring count into target range while keeping crossings
+    evenly distributed along all boundaries.
 
 Standalone module — does not depend on the neural network model.
 Can be used by any testing environment for deterministic crossing
@@ -264,12 +271,17 @@ def _spread_indices(n):
 def constructive_add_crossings(h, zones_np, grid_w, grid_h,
                                 stripe_direction, stripe_k,
                                 target_lower, target_upper):
-    """Add crossings to an optimal zigzag path at boundary positions.
+    """Optimize crossings with even distribution using propagate-then-trim.
 
-    Starts from k-1 crossings (optimal zigzag), greedily adds crossings
-    by applying operations near zone boundaries. Distributes crossings
-    evenly across all boundaries using spread ordering (binary subdivision)
-    so crossings are placed along the full boundary length, not clustered.
+    Phase 1 (propagate): Start from optimal zigzag (k-1 crossings), greedily
+    add crossings at boundary positions to cover the FULL boundary length.
+    Does NOT stop at target — continues until no more crossings can be added.
+    This ensures the entire boundary has crossings, not just one end.
+
+    Phase 2 (trim): If above target_upper, selectively remove crossings using
+    spread ordering (binary subdivision) to bring count into target range.
+    Spread ordering ensures removals are evenly distributed, so the remaining
+    crossings are evenly distributed along the boundary.
 
     Works for any k and grid size.
 
@@ -290,50 +302,39 @@ def constructive_add_crossings(h, zones_np, grid_w, grid_h,
     current = compute_crossings(h, zones_np)
     sequence = []
 
-    # Find zone boundary positions and generate candidates (sequential order)
+    # Find zone boundary positions and generate candidates
     candidates = []
     if stripe_direction == 'v':
-        # Vertical stripes: boundaries are vertical lines between columns
         boundary_cols = []
         for c in range(grid_w - 1):
             if zones_np[0, c] != zones_np[0, c + 1]:
                 boundary_cols.append(c)
 
-        # Candidates near each boundary, sequential along y-axis
         for y in range(0, grid_h - 1, 2):
             for bc in boundary_cols:
                 for x in [max(0, bc - 1), bc]:
                     if x + 2 < grid_w:
                         candidates.append((x, y))
     else:
-        # Horizontal stripes: boundaries are horizontal lines between rows
         boundary_rows = []
         for r in range(grid_h - 1):
             if zones_np[r, 0] != zones_np[r + 1, 0]:
                 boundary_rows.append(r)
 
-        # Candidates near each boundary, sequential along x-axis
         for x in range(0, grid_w - 1, 2):
             for br in boundary_rows:
                 for y in [max(0, br - 1), br]:
                     if y + 2 < grid_h:
                         candidates.append((x, y))
 
-    # Bidirectional sweeps: alternate top-to-bottom and bottom-to-top
-    # This distributes crossings from both ends of the boundary, meeting
-    # in the middle for even coverage.
-    candidates_reverse = list(reversed(candidates))
-    max_passes = 20
+    # ==== Phase 1: Propagate to full boundary coverage ====
+    # Greedy top-to-bottom — does NOT stop at target, goes to near-max.
+    # This ensures crossings exist along the entire boundary length.
+    max_passes = 30
     for _pass in range(max_passes):
-        if current >= target_lower:
-            break
         progress = False
 
-        sweep = candidates if _pass % 2 == 0 else candidates_reverse
-        for cx, cy in sweep:
-            if current >= target_upper:
-                break
-
+        for cx, cy in candidates:
             saved_H = [row[:] for row in h.H]
             saved_V = [row[:] for row in h.V]
 
@@ -357,12 +358,10 @@ def constructive_add_crossings(h, zones_np, grid_w, grid_h,
                 delta = new_crossings - current
 
                 if delta > best_delta:
-                    if current + delta <= target_upper or current < target_lower:
-                        best_delta = delta
-                        best_variant = variant
-                        best_op_type = op_type
+                    best_delta = delta
+                    best_variant = variant
+                    best_op_type = op_type
 
-            # Restore state
             h.H = [row[:] for row in saved_H]
             h.V = [row[:] for row in saved_V]
 
@@ -380,6 +379,92 @@ def constructive_add_crossings(h, zones_np, grid_w, grid_h,
 
         if not progress:
             break
+
+    # ==== Phase 2: Trim to target range with even distribution ====
+    # If above target_upper, remove crossings using spread-ordered positions.
+    # Spread ordering ensures removals are evenly distributed along the
+    # boundary, so remaining crossings are evenly spaced.
+    # Uses step=1 (not step=2) because reducers can be at any y-position
+    # (odd or even, depending on boundary column parity).
+    if current > target_upper:
+        # Generate candidates in spread order (binary subdivision)
+        trim_candidates = []
+        if stripe_direction == 'v':
+            y_positions = list(range(0, grid_h - 1))
+            y_spread = [y_positions[i] for i in _spread_indices(len(y_positions))]
+
+            for y in y_spread:
+                for bc in boundary_cols:
+                    for x in [max(0, bc - 1), bc]:
+                        if x + 2 < grid_w:
+                            trim_candidates.append((x, y))
+        else:
+            x_positions = list(range(0, grid_w - 1))
+            x_spread = [x_positions[i] for i in _spread_indices(len(x_positions))]
+
+            for x in x_spread:
+                for br in boundary_rows:
+                    for y in [max(0, br - 1), br]:
+                        if y + 2 < grid_h:
+                            trim_candidates.append((x, y))
+
+        # Aim for the lower end of target range (more reduction)
+        trim_target = target_lower + (target_upper - target_lower) // 4
+
+        for _pass in range(max_passes):
+            if current <= trim_target:
+                break
+            progress = False
+
+            for cx, cy in trim_candidates:
+                if current <= target_lower:
+                    break
+
+                saved_H = [row[:] for row in h.H]
+                saved_V = [row[:] for row in h.V]
+
+                best_delta = 0
+                best_variant = None
+                best_op_type = None
+
+                for variant in ALL_VARIANTS:
+                    op_type = 'T' if variant in TRANSPOSE_VARIANTS else 'F'
+                    if not validate_action(op_type, cx, cy, variant, grid_w, grid_h):
+                        continue
+
+                    h.H = [row[:] for row in saved_H]
+                    h.V = [row[:] for row in saved_V]
+
+                    success = apply_op(h, op_type, cx, cy, variant)
+                    if not success:
+                        continue
+
+                    new_crossings = compute_crossings(h, zones_np)
+                    delta = new_crossings - current
+
+                    if delta < best_delta:
+                        if current + delta >= target_lower:
+                            best_delta = delta
+                            best_variant = variant
+                            best_op_type = op_type
+
+                h.H = [row[:] for row in saved_H]
+                h.V = [row[:] for row in saved_V]
+
+                if best_delta < 0 and best_variant is not None:
+                    apply_op(h, best_op_type, cx, cy, best_variant)
+                    new_c = compute_crossings(h, zones_np)
+                    sequence.append({
+                        'kind': best_op_type, 'x': cx, 'y': cy,
+                        'variant': best_variant,
+                        'crossings_before': current,
+                        'crossings_after': new_c,
+                    })
+                    current = new_c
+                    progress = True
+
+            if not progress:
+                break
 
     return current, len(sequence), sequence
 
