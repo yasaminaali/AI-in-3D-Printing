@@ -14,9 +14,9 @@
 #SBATCH --error=comparison_inference_%j.err
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=8
-#SBATCH --gpus-per-node=h100:1
-#SBATCH --mem=64G
+#SBATCH --cpus-per-task=32
+#SBATCH --gpus-per-node=h100:4
+#SBATCH --mem=0
 #SBATCH --time=04:00:00
 #SBATCH --account=aip-rnishat
 #SBATCH --qos=normal
