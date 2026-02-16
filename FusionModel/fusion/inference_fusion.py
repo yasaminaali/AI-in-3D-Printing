@@ -171,11 +171,12 @@ def build_history_tensors(history_buffer, max_history, initial_crossings, device
 # Light SA escape (fallback when model is completely stuck)
 # ---------------------------------------------------------------------------
 
-def _sa_optimize(h, zones_np, grid_w, grid_h, target_upper, max_steps=8000,
-                 time_limit=60.0):
+def _sa_optimize(h, zones_np, grid_w, grid_h, target_upper, max_steps=30000,
+                 time_limit=90.0):
     """SA optimization for voronoi/islands when model can't reach target.
 
-    Uses SA move pool with proper temperature schedule.
+    This is the MAIN optimizer for voronoi/islands — the model just provides
+    a warm start. Runs a serious SA with enough steps to escape local minima.
     Lazy-imports SA_generation to avoid loading it for constructive patterns.
     Stops early on target reached, stagnation, or time limit.
     Time limit starts AFTER move pool generation (which can be slow on large grids).
@@ -205,13 +206,13 @@ def _sa_optimize(h, zones_np, grid_w, grid_h, target_upper, max_steps=8000,
     # Start timer AFTER pool generation (pool gen can take 10-20s on large grids)
     t_start = _time.time()
 
-    T_max = max(80.0, current * 0.5)
-    T_min = 0.5
+    T_max = max(100.0, current * 0.8)
+    T_min = 0.3
     accepted = 0
     steps_since_improvement = 0
-    stagnation_limit = 800
+    stagnation_limit = 5000
     actual_steps = 0
-    refresh_interval = 400
+    refresh_interval = 300
 
     for step in range(max_steps):
         if best <= target_upper:
@@ -503,12 +504,13 @@ def run_inference(
     # Aim for lower end of target range (more reduction), like constructive
     trim_target = target_lower + (target_upper - target_lower) // 4
 
-    # Accumulate operations across retry attempts (don't reset on SA retry)
+    # Accumulate all operations
     all_sequence = []
     all_crossings_history = [current_crossings]
 
-    # ---- Phase 1: Model-guided (retry once after SA escape if stuck) ----
-    for _attempt in range(2):
+    # ---- Phase 1: Model-guided reduction ----
+    _attempt = 0  # single attempt
+    if True:
         history_buffer = deque(maxlen=max_history)
         sequence = []
         crossings_history = [current_crossings]
@@ -652,24 +654,23 @@ def run_inference(
                 else:
                     steps_without_improvement += 1
 
-        # Restore best-ever state from this attempt
+        # Restore best-ever state from model phase
         h.H = best_H
         h.V = best_V
         current_crossings = best_crossings
         sequence = best_sequence
         history_buffer = deque(best_history_list, maxlen=max_history)
 
-        # Accumulate operations from this attempt
+        # Accumulate operations from model phase
         all_sequence.extend(best_sequence)
         all_crossings_history.extend(
             [op['crossings_after'] for op in best_sequence]
         )
 
-        # If reached aggressive target or already retried, proceed to Phase 2
-        if current_crossings <= trim_target or _attempt > 0:
-            break
-
-        # Not in target range — SA optimization, then retry model
+    # ---- Phase 1b: SA optimization (main optimizer for voronoi/islands) ----
+    # Model provides a warm start; SA does the heavy lifting with enough
+    # steps to escape local minima through multi-step uphill exploration.
+    if current_crossings > trim_target:
         model_red = initial_crossings - current_crossings
         print(
             f"    Model got -{model_red} but not in target "
@@ -680,12 +681,9 @@ def run_inference(
             h, zones_np, grid_w, grid_h,
             target_upper=trim_target,
         )
-        if escape_accepted > 0:
-            current_crossings = compute_crossings(h, zones_np)
+        current_crossings = compute_crossings(h, zones_np)
+        if escape_best < initial_crossings:
             sa_escape_used = True
-            continue  # retry Phase 1 from SA state
-        else:
-            break  # SA also stuck, give up
 
     # ---- Phase 2: Greedy redistribution ----
     redistribution_steps = 0
