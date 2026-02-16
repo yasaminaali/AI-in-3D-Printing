@@ -190,6 +190,7 @@ def evaluate_comparison(
         )
         result['sa_ops'] = n_sa_ops
         result['sa_effective_ops'] = n_sa_effective
+        result['sa_runtime'] = traj.get('runtime_sec', None)
         result['zone_pattern'] = pattern
         result['grid_size'] = f"{grid_w}x{grid_h}"
         result['n_zones'] = n_zones
@@ -230,12 +231,15 @@ def evaluate_comparison(
         tgt_hi = result.get('target_upper', '?')
         esc = "+esc" if result.get('sa_escape_used') else ""
 
+        sa_rt = result.get('sa_runtime')
+        sa_rt_str = f"{sa_rt:.0f}s" if sa_rt else "?"
         normal_tag = f" [normally: {orig_strategy}]" if orig_strategy != 'model' else ""
         print(
             f"  [{sample_idx+1}/{total_samples}] {pattern} {grid_w}x{grid_h}{normal_tag} | "
             f"{init_c}->{final_c} (SA:{sa_final}) target:[{tgt_lo},{tgt_hi}] | "
-            f"model{esc}: -{red} in {n_ops}ops | "
-            f"CV={result.get('final_cv', 0):.2f} | {in_target} | {sample_time:.1f}s",
+            f"model{esc}: -{red} in {n_ops}ops (SA:{n_sa_effective}ops) | "
+            f"CV={result.get('final_cv', 0):.2f} | {in_target} | "
+            f"model:{sample_time:.1f}s SA:{sa_rt_str}",
             flush=True,
         )
 
@@ -267,17 +271,18 @@ def _display_comparison_results(results):
     per_pattern.add_column("Grid", justify="center")
     per_pattern.add_column("Model Red", justify="right", style="green")
     per_pattern.add_column("SA Red", justify="right", style="yellow")
-    per_pattern.add_column("Avg Ops", justify="right")
-    per_pattern.add_column("Avg SA Ops", justify="right")
+    per_pattern.add_column("Model Ops", justify="right")
+    per_pattern.add_column("SA Ops", justify="right")
     per_pattern.add_column("Avg CV", justify="right")
     per_pattern.add_column("In Target", justify="right")
-    per_pattern.add_column("Avg Time", justify="right")
+    per_pattern.add_column("Model Time", justify="right")
+    per_pattern.add_column("SA Time", justify="right")
 
     for pattern in ALL_PATTERNS:
         pr = pattern_results.get(pattern, [])
         if not pr:
             per_pattern.add_row(
-                pattern, "-", "0", "-", "-", "-", "-", "-", "-", "-", "-"
+                pattern, "-", "0", "-", "-", "-", "-", "-", "-", "-", "-", "-"
             )
             continue
 
@@ -293,9 +298,11 @@ def _display_comparison_results(results):
         sa_eff_ops = [r.get('sa_effective_ops', 0) for r in pr]
         final_cvs = [r.get('final_cv', 0) for r in pr]
         in_target = sum(1 for r in pr if r.get('in_target_range', False))
-        times = [r.get('sample_time', 0) for r in pr]
+        model_times = [r.get('sample_time', 0) for r in pr]
+        sa_times = [r['sa_runtime'] for r in pr if r.get('sa_runtime') is not None]
 
         cv_style = "green" if np.mean(final_cvs) < CV_THRESHOLDS.get(pattern, 0.5) else "yellow"
+        sa_time_str = f"{np.mean(sa_times):.1f}s" if sa_times else "?"
 
         per_pattern.add_row(
             pattern,
@@ -308,7 +315,8 @@ def _display_comparison_results(results):
             f"{np.mean(sa_eff_ops):.0f}",
             f"[{cv_style}]{np.mean(final_cvs):.2f}[/{cv_style}]",
             f"{in_target}/{n} ({in_target/n*100:.0f}%)",
-            f"{np.mean(times):.1f}s",
+            f"{np.mean(model_times):.1f}s",
+            sa_time_str,
         )
 
     console.print(per_pattern)
@@ -333,18 +341,22 @@ def _display_comparison_results(results):
         detail.add_column("Init", justify="right")
         detail.add_column("Final", justify="right")
         detail.add_column("Red%", justify="right")
+        detail.add_column("Model Ops", justify="right")
         detail.add_column("SA Ops", justify="right")
         detail.add_column("CV", justify="right")
         detail.add_column("Target", justify="center")
-        detail.add_column("Phase", justify="center")
-        detail.add_column("Time", justify="right")
+        detail.add_column("Model Time", justify="right")
+        detail.add_column("SA Time", justify="right")
 
         for i, r in enumerate(pr[:n_show]):
             in_tgt = r.get('in_target_range', False)
             cv_val = r.get('final_cv', 0)
             cv_thresh = r.get('cv_threshold', 0.5)
-            t = r.get('sample_time', 0)
+            model_t = r.get('sample_time', 0)
+            sa_t = r.get('sa_runtime')
+            sa_t_str = f"{sa_t:.1f}s" if sa_t is not None else "?"
             sa_eff = r.get('sa_effective_ops', 0)
+            model_ops = r.get('num_operations', 0)
 
             if in_tgt and cv_val < cv_thresh:
                 style = "bold green"
@@ -357,31 +369,39 @@ def _display_comparison_results(results):
                 str(i + 1), r.get('grid_size', '?'),
                 str(r['initial_crossings']), str(r['final_crossings']),
                 f"{r['reduction_pct']:.1f}%",
+                str(model_ops),
                 str(sa_eff),
                 f"{cv_val:.2f}",
                 "[green]Y[/green]" if in_tgt else "[red]N[/red]",
-                r.get('phase_at_stop', '?'),
-                f"{t:.1f}s",
+                f"{model_t:.1f}s",
+                sa_t_str,
                 style=style,
             )
 
         console.print(detail)
 
-    # ---- Table 3: Average Time per Grid Size per Pattern ----
-    # Collect all grid sizes across all patterns
+    # ---- Table 3: Average Time per Grid Size per Pattern (Model vs SA) ----
     all_grid_sizes = set()
-    time_by_pattern_size = defaultdict(lambda: defaultdict(list))
+    model_time_by_ps = defaultdict(lambda: defaultdict(list))
+    sa_time_by_ps = defaultdict(lambda: defaultdict(list))
+    model_ops_by_ps = defaultdict(lambda: defaultdict(list))
+    sa_ops_by_ps = defaultdict(lambda: defaultdict(list))
     for r in results:
         gs = r['grid_size']
         all_grid_sizes.add(gs)
-        time_by_pattern_size[r['zone_pattern']][gs].append(r.get('sample_time', 0))
+        model_time_by_ps[r['zone_pattern']][gs].append(r.get('sample_time', 0))
+        model_ops_by_ps[r['zone_pattern']][gs].append(r.get('num_operations', 0))
+        sa_ops_by_ps[r['zone_pattern']][gs].append(r.get('sa_effective_ops', 0))
+        if r.get('sa_runtime') is not None:
+            sa_time_by_ps[r['zone_pattern']][gs].append(r['sa_runtime'])
 
     sorted_sizes = sorted(all_grid_sizes, key=lambda s: (
         int(s.split('x')[0]) * int(s.split('x')[1])
     ))
 
+    # Time comparison table
     time_table = Table(
-        title="[bold]Average Time per Grid Size per Pattern[/bold]",
+        title="[bold]Avg Time: Model vs SA per Grid Size per Pattern[/bold]",
         box=box.ROUNDED
     )
     time_table.add_column("Pattern", style="cyan")
@@ -391,27 +411,85 @@ def _display_comparison_results(results):
     for pattern in ALL_PATTERNS:
         row = [pattern]
         for gs in sorted_sizes:
-            times = time_by_pattern_size[pattern].get(gs, [])
-            if times:
-                row.append(f"{np.mean(times):.1f}s")
+            mt = model_time_by_ps[pattern].get(gs, [])
+            st = sa_time_by_ps[pattern].get(gs, [])
+            if mt:
+                cell = f"M:{np.mean(mt):.1f}s"
+                if st:
+                    cell += f"\nSA:{np.mean(st):.0f}s"
+                row.append(cell)
             else:
                 row.append("-")
         time_table.add_row(*row)
 
     console.print(time_table)
 
+    # Ops comparison table
+    ops_table = Table(
+        title="[bold]Avg Ops: Model vs SA per Grid Size per Pattern[/bold]",
+        box=box.ROUNDED
+    )
+    ops_table.add_column("Pattern", style="cyan")
+    for gs in sorted_sizes:
+        ops_table.add_column(gs, justify="right")
+
+    for pattern in ALL_PATTERNS:
+        row = [pattern]
+        for gs in sorted_sizes:
+            mo = model_ops_by_ps[pattern].get(gs, [])
+            so = sa_ops_by_ps[pattern].get(gs, [])
+            if mo:
+                row.append(f"M:{np.mean(mo):.0f}\nSA:{np.mean(so):.0f}")
+            else:
+                row.append("-")
+        ops_table.add_row(*row)
+
+    console.print(ops_table)
+
     # ---- Overall Summary ----
     reductions = [r['reduction'] for r in results]
     reduction_pcts = [r['reduction_pct'] for r in results]
-    ops = [r['num_operations'] for r in results]
+    model_ops = [r['num_operations'] for r in results]
+    sa_ops = [r.get('sa_effective_ops', 0) for r in results]
     sa_reductions = [r['sa_reduction'] for r in results]
     all_cvs = [r.get('final_cv', 0) for r in results]
     in_target_count = sum(1 for r in results if r.get('in_target_range', False))
-    times = [r.get('sample_time', 0) for r in results]
+    model_times = [r.get('sample_time', 0) for r in results]
+    sa_times = [r['sa_runtime'] for r in results if r.get('sa_runtime') is not None]
 
     # Split by original strategy for comparison
     constructive_results = [r for r in results if r.get('original_strategy') == 'constructive']
-    model_results = [r for r in results if r.get('original_strategy') == 'model']
+    model_results_list = [r for r in results if r.get('original_strategy') == 'model']
+
+    # Ops and time comparison
+    avg_model_ops = np.mean(model_ops)
+    avg_sa_ops = np.mean(sa_ops)
+    avg_model_time = np.mean(model_times)
+    avg_sa_time = np.mean(sa_times) if sa_times else float('nan')
+    speedup = avg_sa_time / avg_model_time if avg_model_time > 0 and sa_times else float('nan')
+
+    def _section_stats(rlist):
+        if not rlist:
+            return "  (no samples)"
+        n = len(rlist)
+        in_tgt = sum(1 for r in rlist if r.get('in_target_range', False))
+        m_ops = [r['num_operations'] for r in rlist]
+        s_ops = [r.get('sa_effective_ops', 0) for r in rlist]
+        m_t = [r.get('sample_time', 0) for r in rlist]
+        s_t = [r['sa_runtime'] for r in rlist if r.get('sa_runtime') is not None]
+        avg_mt = np.mean(m_t)
+        avg_st = np.mean(s_t) if s_t else float('nan')
+        sp = avg_st / avg_mt if avg_mt > 0 and s_t else float('nan')
+        lines = [
+            f"  Samples: {n}",
+            f"  In target: {in_tgt}/{n} ({in_tgt/n*100:.0f}%)",
+            f"  Avg reduction: {np.mean([r['reduction_pct'] for r in rlist]):.1f}%",
+            f"  Model ops: {np.mean(m_ops):.1f} avg | SA ops: {np.mean(s_ops):.0f} avg",
+            f"  Model time: {avg_mt:.1f}s | SA time: {avg_st:.1f}s" + (
+                f" | Speedup: {sp:.1f}x" if not np.isnan(sp) else ""
+            ),
+        ]
+        return "\n".join(lines)
 
     console.print(Panel.fit(
         f"[bold]Comparison Summary — Model+SA on ALL Patterns[/bold]\n"
@@ -419,29 +497,20 @@ def _display_comparison_results(results):
         f"In target range: {in_target_count}/{len(results)} "
         f"({in_target_count/len(results)*100:.0f}%)\n"
         f"Avg reduction: {np.mean(reduction_pcts):.1f}%\n"
-        f"Avg operations: {np.mean(ops):.1f}\n"
-        f"Avg final CV: {np.mean(all_cvs):.3f}\n"
-        f"Avg time: {np.mean(times):.1f}s | Total: {sum(times):.0f}s\n"
+        f"\n"
+        f"[bold]Operations:  Model {avg_model_ops:.1f} avg  vs  SA {avg_sa_ops:.0f} avg[/bold]\n"
+        f"[bold]Timing:      Model {avg_model_time:.1f}s avg  vs  SA {avg_sa_time:.1f}s avg"
+        + (f"  ({speedup:.1f}x speedup)" if not np.isnan(speedup) else "") + f"[/bold]\n"
+        f"Total model time: {sum(model_times):.0f}s\n"
         f"\n"
         f"[bold yellow]Patterns that normally use constructive "
         f"(left_right, stripes):[/bold yellow]\n"
-        f"  Samples: {len(constructive_results)}\n"
-        f"  In target: {sum(1 for r in constructive_results if r.get('in_target_range', False))}"
-        f"/{len(constructive_results)} "
-        f"({sum(1 for r in constructive_results if r.get('in_target_range', False))/max(len(constructive_results),1)*100:.0f}%)\n"
-        f"  Avg reduction: {np.mean([r['reduction_pct'] for r in constructive_results]):.1f}%\n"
-        f"  Avg time: {np.mean([r.get('sample_time',0) for r in constructive_results]):.1f}s\n"
+        f"{_section_stats(constructive_results)}\n"
         f"  [dim](Constructive achieves 100% target hit in <3s)[/dim]\n"
         f"\n"
         f"[bold green]Patterns that normally use model "
         f"(voronoi, islands):[/bold green]\n"
-        f"  Samples: {len(model_results)}\n"
-        f"  In target: {sum(1 for r in model_results if r.get('in_target_range', False))}"
-        f"/{len(model_results)} "
-        f"({sum(1 for r in model_results if r.get('in_target_range', False))/max(len(model_results),1)*100:.0f}%)\n"
-        f"  Avg reduction: {np.mean([r['reduction_pct'] for r in model_results]):.1f}%\n"
-        f"  Avg time: {np.mean([r.get('sample_time',0) for r in model_results]):.1f}s"
-        if model_results else "",
+        f"{_section_stats(model_results_list)}",
         border_style="cyan"
     ))
 
