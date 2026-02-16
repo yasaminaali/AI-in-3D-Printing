@@ -171,13 +171,14 @@ def build_history_tensors(history_buffer, max_history, initial_crossings, device
 # Light SA escape (fallback when model is completely stuck)
 # ---------------------------------------------------------------------------
 
-def _light_sa_escape(h, zones_np, grid_w, grid_h, target_upper, max_steps=300,
-                     time_limit=15.0):
-    """Light SA escape — only used when model produces 0 ops.
+def _sa_optimize(h, zones_np, grid_w, grid_h, target_upper, max_steps=3000,
+                 time_limit=45.0):
+    """SA optimization for voronoi/islands when model can't reach target.
 
-    Uses SA move pool for efficient random walk with high temperature.
+    Uses SA move pool with proper temperature schedule.
     Lazy-imports SA_generation to avoid loading it for constructive patterns.
-    Stops early on stagnation (no improvement for 80 steps) or time limit.
+    Stops early on target reached, stagnation, or time limit.
+    Time limit starts AFTER move pool generation (which can be slow on large grids).
     """
     from SA_generation import (
         refresh_move_pool, apply_move,
@@ -187,8 +188,6 @@ def _light_sa_escape(h, zones_np, grid_w, grid_h, target_upper, max_steps=300,
     )
     import random as _random
 
-    t_start = _time.time()
-
     zones_dict = {(x, y): int(zones_np[y, x])
                   for y in range(grid_h) for x in range(grid_w)}
     current = sa_compute_crossings(h, zones_dict)
@@ -196,19 +195,23 @@ def _light_sa_escape(h, zones_np, grid_w, grid_h, target_upper, max_steps=300,
     best_H = [row[:] for row in h.H]
     best_V = [row[:] for row in h.V]
 
-    pool_size = min(2000, grid_w * grid_h * 2)
+    pool_size = min(3000, grid_w * grid_h * 2)
     move_pool = refresh_move_pool(
         h, zones_dict, bias_to_boundary=True,
         max_moves=pool_size, allowed_ops={"transpose", "flip"},
         border_to_inner=True,
     )
 
+    # Start timer AFTER pool generation (pool gen can take 10-20s on large grids)
+    t_start = _time.time()
+
     T_max = 50.0
     T_min = 0.5
     accepted = 0
     steps_since_improvement = 0
-    stagnation_limit = 80
+    stagnation_limit = 300
     actual_steps = 0
+    refresh_interval = 500
 
     for step in range(max_steps):
         if best <= target_upper:
@@ -220,7 +223,7 @@ def _light_sa_escape(h, zones_np, grid_w, grid_h, target_upper, max_steps=300,
 
         actual_steps = step + 1
 
-        if step > 0 and step % 150 == 0:
+        if step > 0 and step % refresh_interval == 0:
             move_pool = refresh_move_pool(
                 h, zones_dict, bias_to_boundary=True,
                 max_moves=pool_size, allowed_ops={"transpose", "flip"},
@@ -267,7 +270,7 @@ def _light_sa_escape(h, zones_np, grid_w, grid_h, target_upper, max_steps=300,
     h.V = best_V
     elapsed = _time.time() - t_start
     print(
-        f"    SA escape: {actual_steps} steps, {accepted} accepted, "
+        f"    SA: {actual_steps} steps, {accepted} accepted, "
         f"best={best}, {elapsed:.1f}s",
         flush=True,
     )
@@ -634,28 +637,27 @@ def run_inference(
         sequence = best_sequence
         history_buffer = deque(best_history_list, maxlen=max_history)
 
-        # If model worked or this is already the retry, proceed to Phase 2
-        if len(sequence) > 0 or _attempt > 0:
+        # If in target range or already retried, proceed to Phase 2
+        if current_crossings <= target_upper or _attempt > 0:
             break
 
-        # Model completely stuck — light SA escape, then retry
-        if current_crossings > target_upper:
-            print(
-                f"    Model stuck (0 ops). Light SA escape...",
-                flush=True,
-            )
-            escape_best, escape_accepted = _light_sa_escape(
-                h, zones_np, grid_w, grid_h,
-                target_upper=target_upper,
-            )
-            if escape_accepted > 0:
-                current_crossings = compute_crossings(h, zones_np)
-                sa_escape_used = True
-                continue  # retry Phase 1 from escaped state
-            else:
-                break  # SA also stuck, give up
+        # Not in target range — SA optimization, then retry model
+        model_red = initial_crossings - current_crossings
+        print(
+            f"    Model got -{model_red} but not in target "
+            f"(best={current_crossings}, need<={target_upper}). SA...",
+            flush=True,
+        )
+        escape_best, escape_accepted = _sa_optimize(
+            h, zones_np, grid_w, grid_h,
+            target_upper=target_upper,
+        )
+        if escape_accepted > 0:
+            current_crossings = compute_crossings(h, zones_np)
+            sa_escape_used = True
+            continue  # retry Phase 1 from SA state
         else:
-            break  # already in target range despite 0 ops
+            break  # SA also stuck, give up
 
     # ---- Phase 2: Greedy redistribution ----
     redistribution_steps = 0
