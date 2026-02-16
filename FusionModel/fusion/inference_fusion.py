@@ -511,7 +511,12 @@ def run_inference(
     # ========== MODEL-ONLY PATH (with SA escape fallback) ==========
     current_crossings = initial_crossings
 
-    dilated_mask = dilate_mask(boundary_mask, dilation=1)
+    # dilation=2 covers ALL valid operation positions.  An operation at (py,px)
+    # modifies a 3×3 subgrid (py..py+2, px..px+2), so for a boundary cell at
+    # (by,bx) the valid top-left corners span (by-2..by, bx-2..bx).  dilation=1
+    # only covers (by-1..by+1) and misses ~56% of valid positions.  dilation=2
+    # covers (by-2..by+2) which includes all of them (plus harmless extras).
+    dilated_mask = dilate_mask(boundary_mask, dilation=2)
     valid_area = torch.zeros(MAX_GRID_SIZE, MAX_GRID_SIZE)
     valid_area[:grid_h, :grid_w] = 1.0
     dilated_mask = (dilated_mask * valid_area).to(device)

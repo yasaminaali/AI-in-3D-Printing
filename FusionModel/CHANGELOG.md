@@ -33,6 +33,7 @@ Results: All grid sizes 30x30–100x100 hit target range, <3s, 11-39 ops, CV < 0
 - **Phase 2 (redistribution)**: Greedy CV uniformity improvement.
 
 #### Key Inference Fixes
+- **Dilation fix (dilation=1 → 2)**: Operation at (py,px) modifies 3×3 subgrid (py..py+2, px..px+2). For boundary cell at (by,bx), valid top-left corners span (by-2..by, bx-2..bx) — 9 positions. Dilation=1 mask covers (by-1..by+1) = only 4/9 valid positions (44%). Dilation=2 covers (by-2..by+2) = all 9 valid positions. With dilation=1, 56% of valid operation positions were masked to -inf in model predictions AND excluded from random sampling. Training forced targets into mask (line 470 of fusion_model.py), creating a train-inference mismatch.
 - **Boundary-biased random sampling**: Random positions sample from dilated boundary mask instead of uniform grid. On 100x100, ~97% of uniform samples were far from boundaries and useless.
 - **Trim target**: Model aims for `target_lower + (target_upper - target_lower) // 4` (near lower end of range), not `target_upper`.
 - **Operation accumulation**: Operations tracked across all phases via `all_sequence`.
@@ -58,27 +59,35 @@ The model's performance is limited by training data volume, NOT architecture:
 - Coordinate ordering: (x, y) vs (py, px) consistent between training and inference
 - Boundary mask computation: identical logic in training and inference
 - 9-channel encoding: matches between `fusion_dataset.py` and `inference_fusion.py`
-- Dilated mask: training loss mask and inference candidate mask both use dilation=1
 - Receptive field: 4-level U-Net + bottleneck self-attention gives global context
 - No hardcoded size dependencies beyond MAX_GRID_SIZE=128
+
+**Bug found and fixed: dilation=1 → 2**
+- Dilated mask used dilation=1, which only covered 4/9 (44%) of valid operation positions
+- 56% of positions where the 3×3 subgrid reaches a zone boundary were masked to -inf
+- Training forced targets into the mask (no training-side data loss), but inference masked them out
+- Fixed in inference (`inference_fusion.py`) and training default (`train_fusion.py`)
+- **Inference fix is immediate** (unmasking positions the model already saw during training)
+- **Full benefit requires retraining** with `--boundary_dilation 2` (default now) so all valid positions get proper ranking signal
 
 **What needs to happen for model to work on 60x60+:**
 - Generate ~1000+ SA trajectories per grid size for voronoi and islands
 - Rebuild dataset: `python FusionModel/fusion/build_fusion_data.py`
-- Retrain: `sbatch sbatch_train_fusion.sh`
-- The architecture, loss, and inference code are all ready — only data is the bottleneck
+- Retrain with dilation=2 (new default): `sbatch sbatch_train_fusion.sh`
+- The architecture, loss, and inference code are all ready — data + retraining with dilation=2 are the remaining steps
 
 ### Files Modified in v5
 
 | File | Changes |
 |------|---------|
 | `FusionModel/fusion/constructive.py` | **New**. Standalone constructive module with two-phase propagate+trim. |
-| `FusionModel/fusion/inference_fusion.py` | Strategy branching, boundary-biased sampling, trim_target, light SA fallback, visualization colors. |
+| `FusionModel/fusion/inference_fusion.py` | Strategy branching, boundary-biased sampling, trim_target, light SA fallback, dilation=1→2 fix, visualization colors. |
+| `FusionModel/fusion/train_fusion.py` | `--boundary_dilation` default 1→2 (takes effect on next retraining). |
 | `FusionModel/fusion/__init__.py` | Updated exports for constructive module. |
 
 ### Files NOT Modified in v5
 
-`fusion_model.py`, `train_fusion.py`, `fusion_dataset.py`, `build_fusion_data.py`, sbatch scripts, `SA_generation.py`.
+`fusion_model.py`, `fusion_dataset.py`, `build_fusion_data.py`, sbatch scripts, `SA_generation.py`.
 
 ---
 

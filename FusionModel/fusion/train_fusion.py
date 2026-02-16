@@ -586,7 +586,9 @@ def main():
     parser.add_argument('--in_channels', type=int, default=9)
     parser.add_argument('--base_features', type=int, default=48)
     parser.add_argument('--max_grid_size', type=int, default=128)
-    parser.add_argument('--boundary_dilation', type=int, default=1)
+    parser.add_argument('--boundary_dilation', type=int, default=2,
+                        help='Dilation radius for boundary mask. 2 covers all valid '
+                             'operation positions (3x3 subgrid reach). Was 1 before v5.')
     parser.add_argument('--num_workers', type=int, default=2)
     parser.add_argument('--margin', type=float, default=1.0, help='Margin for ranking hinge loss')
     parser.add_argument('--n_hard_neg', type=int, default=32, help='Number of hard negatives per sample')
