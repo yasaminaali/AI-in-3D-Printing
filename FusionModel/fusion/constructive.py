@@ -212,6 +212,52 @@ def select_init_and_strategy(zone_pattern, zones_np, grid_w, grid_h):
 
 
 # ---------------------------------------------------------------------------
+# Spread ordering for even distribution
+# ---------------------------------------------------------------------------
+
+def _spread_indices(n):
+    """Return indices 0..n-1 reordered so early elements span the full range.
+
+    Uses recursive midpoint insertion: first/last, then midpoint, then
+    quarter-points, etc. Ensures that any prefix of the result covers the
+    range as evenly as possible.
+
+    Example for n=8: [0, 7, 3, 1, 5, 2, 4, 6]
+    """
+    if n <= 0:
+        return []
+    if n == 1:
+        return [0]
+
+    result = []
+    added = [False] * n
+
+    def _add(idx):
+        if 0 <= idx < n and not added[idx]:
+            result.append(idx)
+            added[idx] = True
+
+    _add(0)
+    _add(n - 1)
+
+    intervals = [(0, n - 1)]
+    while len(result) < n:
+        next_intervals = []
+        for lo, hi in intervals:
+            if hi - lo <= 1:
+                continue
+            mid = (lo + hi) // 2
+            _add(mid)
+            next_intervals.append((lo, mid))
+            next_intervals.append((mid, hi))
+        if not next_intervals:
+            break
+        intervals = next_intervals
+
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Constructive crossing addition
 # ---------------------------------------------------------------------------
 
@@ -222,7 +268,8 @@ def constructive_add_crossings(h, zones_np, grid_w, grid_h,
 
     Starts from k-1 crossings (optimal zigzag), greedily adds crossings
     by applying operations near zone boundaries. Distributes crossings
-    evenly across all boundaries by cycling through them.
+    evenly across all boundaries using spread ordering (binary subdivision)
+    so crossings are placed along the full boundary length, not clustered.
 
     Works for any k and grid size.
 
@@ -243,7 +290,7 @@ def constructive_add_crossings(h, zones_np, grid_w, grid_h,
     current = compute_crossings(h, zones_np)
     sequence = []
 
-    # Find zone boundary positions and generate candidates
+    # Find zone boundary positions and generate candidates (sequential order)
     candidates = []
     if stripe_direction == 'v':
         # Vertical stripes: boundaries are vertical lines between columns
@@ -252,7 +299,7 @@ def constructive_add_crossings(h, zones_np, grid_w, grid_h,
             if zones_np[0, c] != zones_np[0, c + 1]:
                 boundary_cols.append(c)
 
-        # Candidates near each boundary, evenly spaced along y-axis
+        # Candidates near each boundary, sequential along y-axis
         for y in range(0, grid_h - 1, 2):
             for bc in boundary_cols:
                 for x in [max(0, bc - 1), bc]:
@@ -265,21 +312,25 @@ def constructive_add_crossings(h, zones_np, grid_w, grid_h,
             if zones_np[r, 0] != zones_np[r + 1, 0]:
                 boundary_rows.append(r)
 
-        # Candidates near each boundary, evenly spaced along x-axis
+        # Candidates near each boundary, sequential along x-axis
         for x in range(0, grid_w - 1, 2):
             for br in boundary_rows:
                 for y in [max(0, br - 1), br]:
                     if y + 2 < grid_h:
                         candidates.append((x, y))
 
-    # Greedily add crossings until target range is reached
-    max_passes = 5
+    # Bidirectional sweeps: alternate top-to-bottom and bottom-to-top
+    # This distributes crossings from both ends of the boundary, meeting
+    # in the middle for even coverage.
+    candidates_reverse = list(reversed(candidates))
+    max_passes = 20
     for _pass in range(max_passes):
         if current >= target_lower:
             break
         progress = False
 
-        for cx, cy in candidates:
+        sweep = candidates if _pass % 2 == 0 else candidates_reverse
+        for cx, cy in sweep:
             if current >= target_upper:
                 break
 

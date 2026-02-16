@@ -171,11 +171,13 @@ def build_history_tensors(history_buffer, max_history, initial_crossings, device
 # Light SA escape (fallback when model is completely stuck)
 # ---------------------------------------------------------------------------
 
-def _light_sa_escape(h, zones_np, grid_w, grid_h, target_upper, max_steps=1000):
+def _light_sa_escape(h, zones_np, grid_w, grid_h, target_upper, max_steps=300,
+                     time_limit=15.0):
     """Light SA escape — only used when model produces 0 ops.
 
     Uses SA move pool for efficient random walk with high temperature.
     Lazy-imports SA_generation to avoid loading it for constructive patterns.
+    Stops early on stagnation (no improvement for 80 steps) or time limit.
     """
     from SA_generation import (
         refresh_move_pool, apply_move,
@@ -185,6 +187,8 @@ def _light_sa_escape(h, zones_np, grid_w, grid_h, target_upper, max_steps=1000):
     )
     import random as _random
 
+    t_start = _time.time()
+
     zones_dict = {(x, y): int(zones_np[y, x])
                   for y in range(grid_h) for x in range(grid_w)}
     current = sa_compute_crossings(h, zones_dict)
@@ -192,24 +196,34 @@ def _light_sa_escape(h, zones_np, grid_w, grid_h, target_upper, max_steps=1000):
     best_H = [row[:] for row in h.H]
     best_V = [row[:] for row in h.V]
 
+    pool_size = min(2000, grid_w * grid_h * 2)
     move_pool = refresh_move_pool(
         h, zones_dict, bias_to_boundary=True,
-        max_moves=5000, allowed_ops={"transpose", "flip"},
+        max_moves=pool_size, allowed_ops={"transpose", "flip"},
         border_to_inner=True,
     )
 
     T_max = 50.0
     T_min = 0.5
     accepted = 0
+    steps_since_improvement = 0
+    stagnation_limit = 80
+    actual_steps = 0
 
     for step in range(max_steps):
         if best <= target_upper:
             break
+        if steps_since_improvement >= stagnation_limit:
+            break
+        if _time.time() - t_start > time_limit:
+            break
 
-        if step > 0 and step % 200 == 0:
+        actual_steps = step + 1
+
+        if step > 0 and step % 150 == 0:
             move_pool = refresh_move_pool(
                 h, zones_dict, bias_to_boundary=True,
-                max_moves=5000, allowed_ops={"transpose", "flip"},
+                max_moves=pool_size, allowed_ops={"transpose", "flip"},
                 border_to_inner=True,
             )
 
@@ -239,15 +253,22 @@ def _light_sa_escape(h, zones_np, grid_w, grid_h, target_upper, max_steps=1000):
                     best = current
                     best_H = [row[:] for row in h.H]
                     best_V = [row[:] for row in h.V]
+                    steps_since_improvement = 0
+                else:
+                    steps_since_improvement += 1
             else:
                 _restore_edges_snapshot(h, snap)
+                steps_since_improvement += 1
         else:
             _restore_edges_snapshot(h, snap)
+            steps_since_improvement += 1
 
     h.H = best_H
     h.V = best_V
+    elapsed = _time.time() - t_start
     print(
-        f"    SA escape: {max_steps} steps, {accepted} accepted, best={best}",
+        f"    SA escape: {actual_steps} steps, {accepted} accepted, "
+        f"best={best}, {elapsed:.1f}s",
         flush=True,
     )
     return best, accepted
@@ -259,11 +280,22 @@ def _light_sa_escape(h, zones_np, grid_w, grid_h, target_upper, max_steps=1000):
 
 def plot_cycle_on_ax(ax, h, zones_np, title):
     W, H = h.width, h.height
-    zone_vals = sorted(set(zones_np.flatten().tolist()))
-    a = zone_vals[0] if zone_vals else 0
+    zone_vals = sorted(set(zones_np[:H, :W].flatten().tolist()))
+    n_zones = len(zone_vals)
+
+    # Use a colormap with distinct colors for each zone
+    if n_zones <= 2:
+        palette = np.array([[0.68, 0.85, 0.90], [0.56, 0.93, 0.56]])
+    else:
+        cmap = plt.cm.get_cmap('tab10' if n_zones <= 10 else 'tab20', n_zones)
+        palette = np.array([cmap(i)[:3] for i in range(n_zones)])
+        # Lighten the palette for better edge visibility
+        palette = 0.3 + 0.5 * palette
+
+    zone_to_idx = {v: i for i, v in enumerate(zone_vals)}
     colors = np.zeros((H, W, 3))
-    colors[zones_np[:H, :W] == a] = [0.68, 0.85, 0.90]
-    colors[zones_np[:H, :W] != a] = [0.56, 0.93, 0.56]
+    for v, idx in zone_to_idx.items():
+        colors[zones_np[:H, :W] == v] = palette[idx]
     ax.imshow(colors, extent=(-0.5, W - 0.5, H - 0.5, -0.5), origin='upper')
 
     from matplotlib.collections import LineCollection
@@ -454,6 +486,7 @@ def run_inference(
     all_variants = list(VARIANT_MAP.keys())
     T_min = 0.01
     sa_escape_used = False
+    stagnation_limit = 100  # stop after 100 steps with no improvement
 
     # ---- Phase 1: Model-guided (retry once after SA escape if stuck) ----
     for _attempt in range(2):
@@ -471,14 +504,20 @@ def run_inference(
         total_attempts = 0
         invalid_count = 0
         accepted_worse = 0
+        steps_without_improvement = 0
+        step = 0
 
         model.eval()
         with torch.no_grad():
-            for step in range(max_steps):
-                if best_crossings <= target_lower:
+            while True:
+                # Stop if target reached
+                if best_crossings <= target_upper:
+                    break
+                # Stop on stagnation
+                if steps_without_improvement >= stagnation_limit:
                     break
 
-                progress = step / max(max_steps - 1, 1)
+                progress = min(step / max(max_steps - 1, 1), 1.0)
                 T = T_max * (T_min / T_max) ** progress
 
                 positions = _get_candidate_positions(
@@ -532,7 +571,10 @@ def run_inference(
                 h.H = [row[:] for row in saved_H]
                 h.V = [row[:] for row in saved_V]
 
+                step += 1
+
                 if best_op is None:
+                    steps_without_improvement += 1
                     continue
 
                 new_crossings, op_type, px, py, variant = best_op
@@ -571,14 +613,19 @@ def run_inference(
                         best_V = [row[:] for row in h.V]
                         best_sequence = [op.copy() for op in sequence]
                         best_history_list = list(history_buffer)
+                        steps_without_improvement = 0
+                    else:
+                        steps_without_improvement += 1
 
                     if verbose and step % 50 == 0:
                         console.print(
-                            f"  Step {step+1} [T={T:.2f}]: "
+                            f"  Step {step} [T={T:.2f}]: "
                             f"{op_type}({variant}) at ({px},{py}) "
                             f"delta={delta:+d} -> crossings={current_crossings} "
                             f"(best={best_crossings})"
                         )
+                else:
+                    steps_without_improvement += 1
 
         # Restore best-ever state from this attempt
         h.H = best_H
@@ -600,7 +647,6 @@ def run_inference(
             escape_best, escape_accepted = _light_sa_escape(
                 h, zones_np, grid_w, grid_h,
                 target_upper=target_upper,
-                max_steps=1000,
             )
             if escape_accepted > 0:
                 current_crossings = compute_crossings(h, zones_np)
@@ -861,9 +907,6 @@ def evaluate_all_patterns(
         init_pat, strategy, s_dir, s_k = select_init_and_strategy(
             pattern, zones_np, grid_w, grid_h,
         )
-        # Model-only gets more steps for large grids
-        effective_steps = 500 if strategy == 'model' else max_steps
-
         sample_t0 = _time.time()
         result = run_inference(
             model=model,
@@ -876,7 +919,7 @@ def evaluate_all_patterns(
             stripe_direction=s_dir,
             stripe_k=s_k,
             max_history=max_history,
-            max_steps=effective_steps,
+            max_steps=max_steps,
             n_candidates=n_candidates,
             n_random=n_random,
             device=device,
