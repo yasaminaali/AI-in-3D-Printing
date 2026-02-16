@@ -500,6 +500,13 @@ def run_inference(
     sa_escape_used = False
     stagnation_limit = 100  # stop after 100 steps with no improvement
 
+    # Aim for lower end of target range (more reduction), like constructive
+    trim_target = target_lower + (target_upper - target_lower) // 4
+
+    # Accumulate operations across retry attempts (don't reset on SA retry)
+    all_sequence = []
+    all_crossings_history = [current_crossings]
+
     # ---- Phase 1: Model-guided (retry once after SA escape if stuck) ----
     for _attempt in range(2):
         history_buffer = deque(maxlen=max_history)
@@ -522,8 +529,8 @@ def run_inference(
         model.eval()
         with torch.no_grad():
             while True:
-                # Stop if target reached
-                if best_crossings <= target_upper:
+                # Stop if aggressive target reached
+                if best_crossings <= trim_target:
                     break
                 # Stop on stagnation
                 if steps_without_improvement >= stagnation_limit:
@@ -652,20 +659,26 @@ def run_inference(
         sequence = best_sequence
         history_buffer = deque(best_history_list, maxlen=max_history)
 
-        # If in target range or already retried, proceed to Phase 2
-        if current_crossings <= target_upper or _attempt > 0:
+        # Accumulate operations from this attempt
+        all_sequence.extend(best_sequence)
+        all_crossings_history.extend(
+            [op['crossings_after'] for op in best_sequence]
+        )
+
+        # If reached aggressive target or already retried, proceed to Phase 2
+        if current_crossings <= trim_target or _attempt > 0:
             break
 
         # Not in target range — SA optimization, then retry model
         model_red = initial_crossings - current_crossings
         print(
             f"    Model got -{model_red} but not in target "
-            f"(best={current_crossings}, need<={target_upper}). SA...",
+            f"(best={current_crossings}, need<={trim_target}). SA...",
             flush=True,
         )
         escape_best, escape_accepted = _sa_optimize(
             h, zones_np, grid_w, grid_h,
-            target_upper=target_upper,
+            target_upper=trim_target,
         )
         if escape_accepted > 0:
             current_crossings = compute_crossings(h, zones_np)
@@ -744,9 +757,9 @@ def run_inference(
                     apply_op(h, ot, px2, py2, var2)
                     current_cv = ncv
                     current_crossings = nc
-                    crossings_history.append(current_crossings)
+                    all_crossings_history.append(current_crossings)
                     redistribution_steps += 1
-                    sequence.append({
+                    all_sequence.append({
                         'kind': ot, 'x': px2, 'y': py2,
                         'variant': var2,
                         'crossings_before': current_crossings,
@@ -768,9 +781,9 @@ def run_inference(
         'final_crossings': current_crossings,
         'reduction': reduction,
         'reduction_pct': reduction_pct,
-        'num_operations': len(sequence),
-        'sequence': sequence,
-        'crossings_history': crossings_history,
+        'num_operations': len(all_sequence),
+        'sequence': all_sequence,
+        'crossings_history': all_crossings_history,
         'total_attempts': total_attempts,
         'invalid_ops': invalid_count,
         'final_h': h,
