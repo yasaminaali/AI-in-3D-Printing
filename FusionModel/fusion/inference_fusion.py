@@ -31,6 +31,12 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from operations import HamiltonianSTL
 from fusion_model import FusionNet, VARIANT_REV, VARIANT_MAP, NUM_ACTIONS
+from constructive import (
+    select_init_and_strategy, constructive_add_crossings,
+    compute_crossings, validate_action, apply_op,
+    compute_boundary_density_cv, detect_stripe_params,
+    TRANSPOSE_VARIANTS, FLIP_VARIANTS, TARGET_RANGES, CV_THRESHOLDS,
+)
 from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
@@ -41,87 +47,11 @@ console = Console()
 
 MAX_GRID_SIZE = 128
 MAX_HISTORY = 32
-TRANSPOSE_VARIANTS = {'nl', 'nr', 'sl', 'sr', 'eb', 'ea', 'wa', 'wb'}
-FLIP_VARIANTS = {'n', 's', 'e', 'w'}
 ALL_PATTERNS = ['left_right', 'voronoi', 'islands', 'stripes']
 
-# Decision 2: Pattern-specific target reduction ranges (inference-only)
-TARGET_RANGES = {
-    'left_right': (0.20, 0.40),
-    'stripes':    (0.20, 0.40),
-    'islands':    (0.10, 0.25),
-    'voronoi':    (0.05, 0.20),
-}
-
-# Decision 9: CV thresholds for acceptable uniformity
-CV_THRESHOLDS = {
-    'left_right': 0.3,
-    'stripes':    0.3,
-    'islands':    0.5,
-    'voronoi':    0.5,
-}
-
 
 # ---------------------------------------------------------------------------
-# Strategy selection
-# ---------------------------------------------------------------------------
-
-def _detect_stripe_params(zones_np, grid_w, grid_h):
-    """Detect stripe direction and k from zone grid.
-
-    Vertical stripes: each column has uniform zone values.
-    Horizontal stripes: each row has uniform zone values.
-    """
-    col_uniform = True
-    for c in range(grid_w):
-        if len(set(zones_np[:grid_h, c].tolist())) > 1:
-            col_uniform = False
-            break
-
-    if col_uniform:
-        k = len(set(zones_np[0, :grid_w].tolist()))
-        return 'v', k
-
-    row_uniform = True
-    for r in range(grid_h):
-        if len(set(zones_np[r, :grid_w].tolist())) > 1:
-            row_uniform = False
-            break
-
-    if row_uniform:
-        k = len(set(zones_np[:grid_h, 0].tolist()))
-        return 'h', k
-
-    # Fallback: vertical
-    k = len(set(zones_np[0, :grid_w].tolist()))
-    return 'v', k
-
-
-def _select_init_and_strategy(zone_pattern, zones_np, grid_w, grid_h):
-    """Determine init pattern, inference strategy, and stripe params.
-
-    Returns:
-        init_pattern: 'vertical_zigzag' or 'zigzag'
-        strategy: 'constructive' or 'model'
-        stripe_direction: 'v' or 'h' (for constructive) or None
-        stripe_k: number of stripes (for constructive) or None
-    """
-    if zone_pattern in ('left_right', 'leftright', 'lr'):
-        return 'vertical_zigzag', 'constructive', 'v', 2
-
-    if zone_pattern == 'stripes':
-        direction, k = _detect_stripe_params(zones_np, grid_w, grid_h)
-        if direction == 'v':
-            return 'vertical_zigzag', 'constructive', 'v', k
-        else:
-            return 'zigzag', 'constructive', 'h', k
-
-    # voronoi, islands, unknown -> model-only
-    return 'zigzag', 'model', None, None
-
-
-# ---------------------------------------------------------------------------
-# Grid helpers
+# Grid helpers (model-specific — shared helpers imported from constructive)
 # ---------------------------------------------------------------------------
 
 def _h_edges_np(h: HamiltonianSTL) -> np.ndarray:
@@ -129,13 +59,6 @@ def _h_edges_np(h: HamiltonianSTL) -> np.ndarray:
 
 def _v_edges_np(h: HamiltonianSTL) -> np.ndarray:
     return np.array(h.V, dtype=np.float32)
-
-def compute_crossings(h: HamiltonianSTL, zones_np: np.ndarray) -> int:
-    H_arr = _h_edges_np(h)
-    V_arr = _v_edges_np(h)
-    h_cross = H_arr * (zones_np[:, :-1] != zones_np[:, 1:]).astype(np.float32)
-    v_cross = V_arr * (zones_np[:-1, :] != zones_np[1:, :]).astype(np.float32)
-    return int(h_cross.sum() + v_cross.sum())
 
 def compute_boundary_mask(zones_np: np.ndarray, grid_h: int, grid_w: int) -> torch.Tensor:
     mask = np.zeros((MAX_GRID_SIZE, MAX_GRID_SIZE), dtype=np.float32)
@@ -146,67 +69,6 @@ def compute_boundary_mask(zones_np: np.ndarray, grid_h: int, grid_w: int) -> tor
     mask[:grid_h - 1, :grid_w] = np.maximum(mask[:grid_h - 1, :grid_w], v_diff)
     mask[1:grid_h, :grid_w] = np.maximum(mask[1:grid_h, :grid_w], v_diff)
     return torch.from_numpy(mask)
-
-
-def compute_boundary_density_cv(h, zones_np, grid_w, grid_h):
-    """Compute coefficient of variation of crossing density across zone-pair boundaries.
-
-    Groups all zone-boundary edges by zone pair (min_id, max_id), computes
-    density = crossings / boundary_length for each pair, then returns the CV
-    (std / mean) of those densities.
-
-    Returns:
-        cv: float, 0 = perfect uniformity, <0.3 good, >1 bad
-        details: dict mapping (za, zb) -> {length, crossings, density}
-    """
-    H_arr = np.array(h.H, dtype=np.float32)[:grid_h, :grid_w - 1]
-    V_arr = np.array(h.V, dtype=np.float32)[:grid_h - 1, :grid_w]
-
-    zones = zones_np[:grid_h, :grid_w]
-
-    # Horizontal zone boundaries: between (r, c) and (r, c+1)
-    h_diff = zones[:, :-1] != zones[:, 1:]
-    h_za = zones[:, :-1][h_diff]
-    h_zb = zones[:, 1:][h_diff]
-    h_crossing = H_arr[h_diff]
-
-    # Vertical zone boundaries: between (r, c) and (r+1, c)
-    v_diff = zones[:-1, :] != zones[1:, :]
-    v_za = zones[:-1, :][v_diff]
-    v_zb = zones[1:, :][v_diff]
-    v_crossing = V_arr[v_diff]
-
-    if len(h_za) == 0 and len(v_za) == 0:
-        return 0.0, {}
-
-    all_za = np.concatenate([h_za, v_za]) if len(h_za) > 0 and len(v_za) > 0 else (h_za if len(h_za) > 0 else v_za)
-    all_zb = np.concatenate([h_zb, v_zb]) if len(h_zb) > 0 and len(v_zb) > 0 else (h_zb if len(h_zb) > 0 else v_zb)
-    all_cross = np.concatenate([h_crossing, v_crossing]) if len(h_crossing) > 0 and len(v_crossing) > 0 else (h_crossing if len(h_crossing) > 0 else v_crossing)
-
-    pair_min = np.minimum(all_za, all_zb)
-    pair_max = np.maximum(all_za, all_zb)
-
-    unique_pairs = set(zip(pair_min.tolist(), pair_max.tolist()))
-
-    densities = []
-    details = {}
-    for za, zb in unique_pairs:
-        mask = (pair_min == za) & (pair_max == zb)
-        length = int(mask.sum())
-        crossings = int((all_cross[mask] > 0.5).sum())
-        density = crossings / length if length > 0 else 0.0
-        densities.append(density)
-        details[(za, zb)] = {'length': length, 'crossings': crossings, 'density': density}
-
-    if len(densities) < 2:
-        return 0.0, details
-
-    densities = np.array(densities)
-    mean_d = densities.mean()
-    if mean_d == 0:
-        return 0.0, details
-    cv = float(densities.std() / mean_d)
-    return cv, details
 
 
 def encode_state_9ch(zones_np, boundary_mask, h, grid_w, grid_h, initial_crossings):
@@ -264,41 +126,6 @@ def encode_state_9ch(zones_np, boundary_mask, h, grid_w, grid_h, initial_crossin
     return state
 
 
-def validate_action(op_type, x, y, variant, grid_w, grid_h):
-    if x < 0 or y < 0:
-        return False
-    if op_type == 'T':
-        if variant not in TRANSPOSE_VARIANTS:
-            return False
-        return x + 2 < grid_w and y + 2 < grid_h
-    if op_type == 'F':
-        if variant not in FLIP_VARIANTS:
-            return False
-        if variant in ['n', 's']:
-            return x + 1 < grid_w and y + 2 < grid_h
-        else:
-            return x + 2 < grid_w and y + 1 < grid_h
-    return False
-
-
-def apply_op(h, op_type, x, y, variant):
-    try:
-        if op_type == 'T':
-            sub = h.get_subgrid((x, y), (x + 2, y + 2))
-            result, status = h.transpose_subgrid(sub, variant)
-            return 'transposed_' in status
-        elif op_type == 'F':
-            if variant in ['n', 's']:
-                sub = h.get_subgrid((x, y), (x + 1, y + 2))
-            else:
-                sub = h.get_subgrid((x, y), (x + 2, y + 1))
-            result, status = h.flip_subgrid(sub, variant)
-            return 'flipped_' in status
-    except Exception:
-        return False
-    return False
-
-
 def save_grid_state(h):
     return (copy.deepcopy(h.H), copy.deepcopy(h.V))
 
@@ -338,112 +165,6 @@ def build_history_tensors(history_buffer, max_history, initial_crossings, device
         hist_mask[0, i] = 1.0
 
     return hist_act, hist_py, hist_px, hist_cb, hist_ca, hist_mask
-
-
-# ---------------------------------------------------------------------------
-# Constructive crossing addition for stripe/left_right patterns
-# ---------------------------------------------------------------------------
-
-def constructive_add_crossings(h, zones_np, grid_w, grid_h,
-                                stripe_direction, stripe_k,
-                                target_lower, target_upper):
-    """Add crossings to an optimal zigzag path at boundary positions.
-
-    Starts from k-1 crossings (optimal zigzag), greedily adds crossings
-    by applying operations near zone boundaries. Distributes crossings
-    evenly across all boundaries by cycling through them.
-
-    Returns:
-        final_crossings, n_ops, sequence
-    """
-    current = compute_crossings(h, zones_np)
-    sequence = []
-    all_variants = list(VARIANT_MAP.keys())
-
-    # Find zone boundary positions and generate candidates
-    candidates = []
-    if stripe_direction == 'v':
-        boundary_cols = []
-        for c in range(grid_w - 1):
-            if zones_np[0, c] != zones_np[0, c + 1]:
-                boundary_cols.append(c)
-
-        for y in range(0, grid_h - 1, 2):
-            for bc in boundary_cols:
-                for x in [max(0, bc - 1), bc]:
-                    if x + 2 < grid_w:
-                        candidates.append((x, y))
-    else:
-        boundary_rows = []
-        for r in range(grid_h - 1):
-            if zones_np[r, 0] != zones_np[r + 1, 0]:
-                boundary_rows.append(r)
-
-        for x in range(0, grid_w - 1, 2):
-            for br in boundary_rows:
-                for y in [max(0, br - 1), br]:
-                    if y + 2 < grid_h:
-                        candidates.append((x, y))
-
-    # Greedily add crossings until target range is reached
-    max_passes = 5
-    for _pass in range(max_passes):
-        if current >= target_lower:
-            break
-        progress = False
-
-        for cx, cy in candidates:
-            if current >= target_upper:
-                break
-
-            saved_H = [row[:] for row in h.H]
-            saved_V = [row[:] for row in h.V]
-
-            best_delta = 0
-            best_variant = None
-            best_op_type = None
-
-            for variant in all_variants:
-                op_type = 'T' if variant in TRANSPOSE_VARIANTS else 'F'
-                if not validate_action(op_type, cx, cy, variant, grid_w, grid_h):
-                    continue
-
-                h.H = [row[:] for row in saved_H]
-                h.V = [row[:] for row in saved_V]
-
-                success = apply_op(h, op_type, cx, cy, variant)
-                if not success:
-                    continue
-
-                new_crossings = compute_crossings(h, zones_np)
-                delta = new_crossings - current
-
-                if delta > best_delta:
-                    if current + delta <= target_upper or current < target_lower:
-                        best_delta = delta
-                        best_variant = variant
-                        best_op_type = op_type
-
-            # Restore state
-            h.H = [row[:] for row in saved_H]
-            h.V = [row[:] for row in saved_V]
-
-            if best_delta > 0 and best_variant is not None:
-                apply_op(h, best_op_type, cx, cy, best_variant)
-                new_c = compute_crossings(h, zones_np)
-                sequence.append({
-                    'kind': best_op_type, 'x': cx, 'y': cy,
-                    'variant': best_variant,
-                    'crossings_before': current,
-                    'crossings_after': new_c,
-                })
-                current = new_c
-                progress = True
-
-        if not progress:
-            break
-
-    return current, len(sequence), sequence
 
 
 # ---------------------------------------------------------------------------
@@ -1026,7 +747,7 @@ def evaluate_all_patterns(
         boundary_mask = compute_boundary_mask(zones_np, grid_h, grid_w)
 
         # Determine strategy
-        init_pat, strategy, s_dir, s_k = _select_init_and_strategy(
+        init_pat, strategy, s_dir, s_k = select_init_and_strategy(
             pattern, zones_np, grid_w, grid_h,
         )
         # Model-only gets more steps for large grids
