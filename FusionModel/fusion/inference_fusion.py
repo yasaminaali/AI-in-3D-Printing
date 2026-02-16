@@ -486,6 +486,15 @@ def run_inference(
     valid_area[:grid_h, :grid_w] = 1.0
     dilated_mask = (dilated_mask * valid_area).to(device)
 
+    # Pre-compute boundary-adjacent positions for random sampling
+    # (uniform random over entire grid wastes ~95% of samples on large grids)
+    _boundary_ys, _boundary_xs = torch.where(dilated_mask.cpu() > 0.5)
+    _boundary_positions = list(zip(_boundary_ys.numpy(), _boundary_xs.numpy()))
+    n_boundary = len(_boundary_positions)
+
+    # Scale random samples with grid area (larger grids need more exploration)
+    effective_n_random = max(n_random, min(50, n_boundary // 4))
+
     all_variants = list(VARIANT_MAP.keys())
     T_min = 0.01
     sa_escape_used = False
@@ -529,11 +538,17 @@ def run_inference(
                     max_history=max_history, n_positions=n_candidates,
                 )
 
-                if n_random > 0:
-                    for _ in range(n_random):
-                        py = np.random.randint(0, grid_h)
-                        px = np.random.randint(0, grid_w)
-                        positions.append((py, px, 0.0, all_variants))
+                # Boundary-biased random sampling: draw from dilated mask
+                # positions instead of uniform grid (all samples are near
+                # boundaries and thus potentially useful)
+                if n_boundary > 0 and effective_n_random > 0:
+                    rand_idx = np.random.choice(
+                        n_boundary, size=min(effective_n_random, n_boundary),
+                        replace=False,
+                    )
+                    for ri in rand_idx:
+                        py, px = _boundary_positions[ri]
+                        positions.append((int(py), int(px), 0.0, all_variants))
 
                 if not positions:
                     break
