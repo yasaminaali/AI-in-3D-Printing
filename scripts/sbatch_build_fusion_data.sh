@@ -4,7 +4,7 @@
 # CPU-only job — replays SA trajectories with safe methods
 #=============================================================
 #
-# Submit with:   sbatch sbatch_build_fusion_data.sh
+# Submit with:   sbatch scripts/sbatch_build_fusion_data.sh
 # Check status:  squeue -u $USER
 # Cancel job:    scancel <job_id>
 # View output:   tail -f fusion_build_data_%j.out
@@ -53,14 +53,14 @@ echo ""
 # Default: uses final_dataset.jsonl from the datasets directory
 # Override with environment variable: DATASET_JSONL=/path/to/file.jsonl
 DATASET_JSONL="${DATASET_JSONL:-datasets/final_dataset.jsonl}"
-OUTPUT_PT="FusionModel/fusion/fusion_data.pt"
+OUTPUT_PT="checkpoints/fusion_data.pt"
 
 echo "Input JSONL:  $DATASET_JSONL"
 echo "Output .pt:   $OUTPUT_PT"
 echo ""
 
 # --- Build training data with safe replay methods ---
-PYTHONPATH="$(pwd):$PYTHONPATH" python3 FusionModel/fusion/build_fusion_data.py \
+PYTHONPATH="$(pwd)/src:$PYTHONPATH" python3 src/model/build_fusion_data.py \
     --input "$DATASET_JSONL" \
     --output "$OUTPUT_PT"
 

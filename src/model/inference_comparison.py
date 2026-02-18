@@ -9,8 +9,8 @@ All patterns use horizontal zigzag init → model+SA cycle.
 Output goes to a separate folder so existing results are untouched.
 
 Usage:
-    PYTHONPATH=$(pwd):$PYTHONPATH python FusionModel/fusion/inference_comparison.py \\
-        --checkpoint FusionModel/nn_checkpoints/fusion/best.pt
+    PYTHONPATH=$(pwd)/src:$PYTHONPATH python src/model/inference_comparison.py \\
+        --checkpoint checkpoints/best.pt
 """
 
 import torch
@@ -26,7 +26,7 @@ from pathlib import Path
 from collections import defaultdict
 
 sys.path.insert(0, str(Path(__file__).parent))
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from inference_fusion import (
     run_inference, load_model, compute_boundary_mask, plot_cycle_on_ax,
@@ -62,7 +62,7 @@ def evaluate_comparison(
     n_random=10,
     device=torch.device('cuda'),
     visualize=False,
-    output_dir='FusionModel/nn_checkpoints/fusion/comparison',
+    output_dir='checkpoints/comparison',
 ):
     console.print(Panel.fit(
         "[bold cyan]Comparison: Model+SA on ALL Patterns (No Constructive)[/bold cyan]\n"
@@ -524,7 +524,7 @@ def main():
         description='Comparison: Model+SA on ALL patterns (no constructive)'
     )
     parser.add_argument('--checkpoint',
-                        default='FusionModel/nn_checkpoints/fusion/best.pt')
+                        default='checkpoints/best.pt')
     parser.add_argument('--jsonl', default='datasets/final_dataset.jsonl')
     parser.add_argument('--n_per_pattern', type=int, default=25)
     parser.add_argument('--max_steps', type=int, default=200)
@@ -533,7 +533,7 @@ def main():
     parser.add_argument('--device', default='cuda')
     parser.add_argument('--visualize', action='store_true')
     parser.add_argument('--output_dir',
-                        default='FusionModel/nn_checkpoints/fusion/comparison')
+                        default='checkpoints/comparison')
 
     args = parser.parse_args()
     device = torch.device(args.device if torch.cuda.is_available() else 'cpu')

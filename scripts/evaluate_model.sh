@@ -18,15 +18,15 @@ fi
 source nn_venv/bin/activate
 
 # Set PYTHONPATH
-export PYTHONPATH=$(pwd):$PYTHONPATH
+export PYTHONPATH=$(pwd)/src:$PYTHONPATH
 
 # Check for model
 echo "Checking for trained model..."
-if [ -f "nn_checkpoints/best_model.pt" ]; then
-    echo "[OK] Found: nn_checkpoints/best_model.pt"
+if [ -f "checkpoints/best_model.pt" ]; then
+    echo "[OK] Found: checkpoints/best_model.pt"
     python -c "
 import torch
-checkpoint = torch.load('nn_checkpoints/best_model.pt', map_location='cpu')
+checkpoint = torch.load('checkpoints/best_model.pt', map_location='cpu')
 print(f'  Epoch: {checkpoint[\"epoch\"]}')
 print(f'  Best val loss: {checkpoint[\"best_val_loss\"]:.4f}')
 "
@@ -61,7 +61,7 @@ echo ""
 for pattern in "${ZONE_PATTERNS[@]}"; do
     echo "  Testing $pattern..."
     python model/inference.py \
-        --checkpoint nn_checkpoints/best_model.pt \
+        --checkpoint checkpoints/best_model.pt \
         --grid-W 30 \
         --grid-H 30 \
         --zone-pattern $pattern \
@@ -100,7 +100,7 @@ from model.data.dataset import HamiltonianDataset
 with open('model/config.yaml', 'r') as f:
     config = yaml.safe_load(f)
 
-checkpoint = torch.load('nn_checkpoints/best_model.pt', map_location='cuda')
+checkpoint = torch.load('checkpoints/best_model.pt', map_location='cuda')
 model = CNNRNNHamiltonian(config)
 model.load_state_dict(checkpoint['model_state_dict'])
 model = model.cuda().eval()
@@ -133,7 +133,7 @@ with open('model/config.yaml', 'r') as f:
     config = yaml.safe_load(f)
 
 # Load checkpoint
-checkpoint = torch.load('nn_checkpoints/best_model.pt', map_location='cpu')
+checkpoint = torch.load('checkpoints/best_model.pt', map_location='cpu')
 
 print('Model Configuration:')
 print(f\"  CNN embedding dim: {config['model']['cnn']['embedding_dim']}\")
@@ -212,10 +212,10 @@ Model Evaluation Report
 Generated: $(date)
 ========================================
 
-Model: nn_checkpoints/best_model.pt
+Model: checkpoints/best_model.pt
 $(python -c "
 import torch
-checkpoint = torch.load('nn_checkpoints/best_model.pt', map_location='cpu')
+checkpoint = torch.load('checkpoints/best_model.pt', map_location='cpu')
 print(f'Epoch: {checkpoint[\"epoch\"]}')
 print(f'Best Val Loss: {checkpoint[\"best_val_loss\"]:.4f}')
 ")

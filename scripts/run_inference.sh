@@ -1,7 +1,7 @@
 #!/bin/bash
 # Inference Launcher for Linux
 # Usage: ./run_inference.sh [options]
-#   --checkpoint PATH    Model checkpoint (default: nn_checkpoints/best_model.pt)
+#   --checkpoint PATH    Model checkpoint (default: checkpoints/best_model.pt)
 #   --grid-W N          Grid width (default: 30)
 #   --grid-H N          Grid height (default: 30)
 #   --zone-pattern P    Pattern: left_right, stripes, voronoi, checkerboard
@@ -9,7 +9,7 @@
 #   --max-ops N         Max operations (default: 100)
 
 # Default values
-CHECKPOINT="nn_checkpoints/best_model.pt"
+CHECKPOINT="checkpoints/best_model.pt"
 GRID_W=30
 GRID_H=30
 ZONE_PATTERN="left_right"
@@ -78,13 +78,13 @@ fi
 source nn_venv/bin/activate
 
 # Set PYTHONPATH
-export PYTHONPATH=$(pwd):$PYTHONPATH
+export PYTHONPATH=$(pwd)/src:$PYTHONPATH
 
 # Check checkpoint
 if [ ! -f "$CHECKPOINT" ]; then
     echo "ERROR: Checkpoint not found: $CHECKPOINT"
     echo "Available checkpoints:"
-    ls -1 nn_checkpoints/ 2>/dev/null || echo "  (none)"
+    ls -1 checkpoints/ 2>/dev/null || echo "  (none)"
     exit 1
 fi
 

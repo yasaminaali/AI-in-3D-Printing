@@ -5,7 +5,7 @@
 # to demonstrate why the constructive approach is needed.
 #=============================================================
 #
-# Submit with:   sbatch sbatch_inference_comparison.sh
+# Submit with:   sbatch scripts/sbatch_inference_comparison.sh
 # Check status:  squeue -u $USER
 # View output:   tail -f comparison_inference_%j.out
 #
@@ -49,10 +49,10 @@ echo "Python: $(which python3)"
 echo ""
 
 # --- Configuration ---
-CHECKPOINT="${CHECKPOINT:-FusionModel/nn_checkpoints/fusion/best.pt}"
+CHECKPOINT="${CHECKPOINT:-checkpoints/best.pt}"
 TEST_JSONL="${TEST_JSONL:-datasets/final_dataset.jsonl}"
 N_PER_PATTERN="${N_PER_PATTERN:-25}"
-OUTPUT_DIR="${OUTPUT_DIR:-FusionModel/nn_checkpoints/fusion/comparison}"
+OUTPUT_DIR="${OUTPUT_DIR:-checkpoints/comparison}"
 
 echo "Configuration:"
 echo "  Checkpoint:  $CHECKPOINT"
@@ -76,7 +76,7 @@ echo "Starting comparison inference (model+SA on ALL patterns)..."
 echo ""
 
 # --- Run comparison inference ---
-PYTHONPATH="$(pwd):$PYTHONPATH" python3 FusionModel/fusion/inference_comparison.py \
+PYTHONPATH="$(pwd)/src:$PYTHONPATH" python3 src/model/inference_comparison.py \
     --checkpoint "$CHECKPOINT" \
     --jsonl "$TEST_JSONL" \
     --n_per_pattern "$N_PER_PATTERN" \

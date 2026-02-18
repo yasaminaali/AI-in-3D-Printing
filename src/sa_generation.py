@@ -1,5 +1,5 @@
 """
-SA_generation.py - Simulated Annealing for Zone Crossing Minimization
+sa_generation.py - Simulated Annealing for Zone Crossing Minimization
 
 This module implements a Simulated Annealing (SA) algorithm to optimize
 Hamiltonian toolpaths by minimizing zone crossings. It generates training
@@ -43,7 +43,7 @@ Dependencies:
     - Zones.py: zones_stripes, zones_voronoi functions
 
 Usage:
-    from SA_generation import run_sa, run_sa_multiple_seeds
+    from sa_generation import run_sa, run_sa_multiple_seeds
 
     # Single run
     best_crossings, ops = run_sa(width=32, height=32, iterations=3000)
@@ -70,7 +70,7 @@ from typing import Tuple, Optional, Dict, Any, List, Set
 import matplotlib.pyplot as plt
 
 from operations import HamiltonianSTL
-from Zones import zones_stripes, zones_voronoi
+from zones import zones_stripes, zones_voronoi
 
 Point = Tuple[int, int]
 

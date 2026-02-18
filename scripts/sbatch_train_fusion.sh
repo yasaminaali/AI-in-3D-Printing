@@ -6,15 +6,15 @@
 #
 # Prerequisites:
 #   1. Run sbatch_build_fusion_data.sh first to create fusion_data.pt
-#   2. Ensure sa_gpu_env is set up (bash setup_env.sh)
+#   2. Ensure sa_gpu_env is set up (bash scripts/setup_env.sh)
 #
-# Submit with:   sbatch sbatch_train_fusion.sh
+# Submit with:   sbatch scripts/sbatch_train_fusion.sh
 # Check status:  squeue -u $USER
 # Cancel job:    scancel <job_id>
 # View output:   tail -f fusion_train_%j.out
 #
 # To resume from a checkpoint:
-#   RESUME_CKPT=FusionModel/nn_checkpoints/fusion/best.pt sbatch sbatch_train_fusion.sh
+#   RESUME_CKPT=checkpoints/best.pt sbatch scripts/sbatch_train_fusion.sh
 #
 #SBATCH --job-name=fusion_train
 #SBATCH --output=fusion_train_%j.out
@@ -74,7 +74,7 @@ if [ $? -ne 0 ]; then
 fi
 
 # --- Verify training data exists ---
-DATA_PT="FusionModel/fusion/fusion_data.pt"
+DATA_PT="checkpoints/fusion_data.pt"
 if [ ! -f "$DATA_PT" ]; then
     echo "ERROR: Training data not found at $DATA_PT"
     echo "Run sbatch_build_fusion_data.sh first."
@@ -111,10 +111,10 @@ echo "Starting DDP training with torchrun (4 GPUs)..."
 echo ""
 
 # --- Launch with torchrun for DDP ---
-PYTHONPATH="$(pwd):$PYTHONPATH" torchrun \
+PYTHONPATH="$(pwd)/src:$PYTHONPATH" torchrun \
     --nproc_per_node=4 \
     --master_port=29500 \
-    FusionModel/fusion/train_fusion.py \
+    src/model/train_fusion.py \
     --epochs "$EPOCHS" \
     --batch_size "$BATCH_SIZE" \
     --learning_rate "$LR" \
@@ -129,8 +129,8 @@ echo "=============================================="
 echo "  Training finished at $(date)"
 echo "  Exit code: $EXIT_CODE"
 echo ""
-echo "  Checkpoints saved to: FusionModel/nn_checkpoints/fusion/"
-ls -lht FusionModel/nn_checkpoints/fusion/*.pt 2>/dev/null | head -5
+echo "  Checkpoints saved to: checkpoints/"
+ls -lht checkpoints/*.pt 2>/dev/null | head -5
 echo "=============================================="
 
 exit $EXIT_CODE

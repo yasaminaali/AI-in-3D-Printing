@@ -15,7 +15,7 @@ REM Activate venv and run inference with proper Python path
 call nn_venv\Scripts\activate.bat
 
 REM Set PYTHONPATH to include current directory
-set PYTHONPATH=%CD%;%PYTHONPATH%
+set PYTHONPATH=%CD%\src;%PYTHONPATH%
 
 REM Run inference
 echo Starting inference...

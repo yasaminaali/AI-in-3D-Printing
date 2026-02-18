@@ -6,13 +6,13 @@
 #
 # Prerequisites:
 #   1. Run sbatch_build_fusion_data.sh first to create fusion_data.pt
-#   2. Ensure sa_gpu_env is set up (bash setup_env.sh)
+#   2. Ensure sa_gpu_env is set up (bash scripts/setup_env.sh)
 #
 # Phase 1 (smoke test, 10 epochs, ~5 min):
-#   sbatch sbatch_train_fusion_1gpu.sh
+#   sbatch scripts/sbatch_train_fusion_1gpu.sh
 #
 # Phase 2 (arch validation, 15 epochs, ~15 min):
-#   EPOCHS=15 PATIENCE=15 sbatch sbatch_train_fusion_1gpu.sh
+#   EPOCHS=15 PATIENCE=15 sbatch scripts/sbatch_train_fusion_1gpu.sh
 #
 #SBATCH --job-name=fusion_p1
 #SBATCH --output=fusion_train_1gpu_%j.out
@@ -71,7 +71,7 @@ if [ $? -ne 0 ]; then
 fi
 
 # --- Verify training data exists ---
-DATA_PT="FusionModel/fusion/fusion_data.pt"
+DATA_PT="checkpoints/fusion_data.pt"
 if [ ! -f "$DATA_PT" ]; then
     echo "ERROR: Training data not found at $DATA_PT"
     echo "Run sbatch_build_fusion_data.sh first."
@@ -105,7 +105,7 @@ echo "Starting single-GPU training..."
 echo ""
 
 # --- Launch directly (no torchrun = no DDP, single GPU) ---
-PYTHONPATH="$(pwd):$PYTHONPATH" python3 FusionModel/fusion/train_fusion.py \
+PYTHONPATH="$(pwd)/src:$PYTHONPATH" python3 src/model/train_fusion.py \
     --epochs "$EPOCHS" \
     --batch_size "$BATCH_SIZE" \
     --learning_rate "$LR" \
@@ -119,8 +119,8 @@ echo "=============================================="
 echo "  Training finished at $(date)"
 echo "  Exit code: $EXIT_CODE"
 echo ""
-echo "  Checkpoints saved to: FusionModel/nn_checkpoints/fusion/"
-ls -lht FusionModel/nn_checkpoints/fusion/*.pt 2>/dev/null | head -5
+echo "  Checkpoints saved to: checkpoints/"
+ls -lht checkpoints/*.pt 2>/dev/null | head -5
 echo "=============================================="
 
 exit $EXIT_CODE

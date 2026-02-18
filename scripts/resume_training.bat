@@ -6,8 +6,8 @@ echo.
 echo GPU: RTX 5090 (32GB VRAM)
 echo Optimized: batch_size=256, mixed_precision=true, epochs=300
 
-if not exist "nn_checkpoints\best_model.pt" (
-    echo ERROR: No checkpoint found at nn_checkpoints\best_model.pt
+if not exist "checkpoints\best_model.pt" (
+    echo ERROR: No checkpoint found at checkpoints\best_model.pt
     echo Run run_training.bat first to create initial checkpoint
     exit /b 1
 )
@@ -20,7 +20,7 @@ if not exist "nn_venv\Scripts\python.exe" (
 
 call nn_venv\Scripts\activate.bat
 
-set PYTHONPATH=%CD%;%PYTHONPATH%
+set PYTHONPATH=%CD%\src;%PYTHONPATH%
 
 echo.
 echo Resuming training from best checkpoint...
@@ -32,7 +32,7 @@ import torch
 import yaml
 
 # Load checkpoint to show info
-checkpoint = torch.load('nn_checkpoints/best_model.pt', map_location='cpu')
+checkpoint = torch.load('checkpoints/best_model.pt', map_location='cpu')
 print(f'Resuming from epoch: {checkpoint[\"epoch\"]}')
 print(f'Best val loss so far: {checkpoint[\"best_val_loss\"]:.4f}')
 print()

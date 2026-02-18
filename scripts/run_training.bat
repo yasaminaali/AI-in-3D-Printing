@@ -15,7 +15,7 @@ REM Activate venv
 call nn_venv\Scripts\activate.bat
 
 REM Set PYTHONPATH
-set PYTHONPATH=%CD%;%PYTHONPATH%
+set PYTHONPATH=%CD%\src;%PYTHONPATH%
 
 REM Check if preprocessed data exists
 if exist "nn_data\train_all.jsonl" (
@@ -45,7 +45,7 @@ REM Check for individual datasets
 if exist "output\datasets\leftright_stripes.jsonl" (
     if exist "output\datasets\voronoi_island.jsonl" (
         echo [OK] Found individual datasets. Merging first...
-        nn_venv\Scripts\python.exe merge_datasets_safe.py
+        nn_venv\Scripts\python.exe src\merge_datasets.py
         if errorlevel 1 (
             echo.
             echo [ERROR] Dataset merging failed!

@@ -5,9 +5,9 @@
 #=============================================================
 #
 # First time setup (run ONCE on login node before submitting):
-#   bash setup_env.sh
+#   bash scripts/setup_env.sh
 #
-# Submit with:   sbatch sbatch_kazi_stripes_gpu.sh
+# Submit with:   sbatch scripts/sbatch_kazi_stripes_gpu.sh
 # Check status:  squeue -u $USER
 # Cancel job:    scancel <job_id>
 # View output:   tail -f sa_stripes_%j.out
@@ -79,7 +79,7 @@ echo "Starting SA stripes pipeline with 4 GPUs..."
 echo ""
 
 # --- Run the SA pipeline with kazi_stripes config ---
-python3 run_pipeline_gpu.py kazi_stripes \
+python3 src/run_pipeline_gpu.py kazi_stripes \
     --gpus 4 \
     --config-dir config
 

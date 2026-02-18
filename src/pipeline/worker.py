@@ -23,7 +23,7 @@ def execute_task(task: Task) -> TaskResult:
     """
     Execute a single SA task.
 
-    Imports and calls the existing run_sa() function from SA_generation.py.
+    Imports and calls the existing run_sa() function from sa_generation.py.
     Catches all exceptions and returns a TaskResult with status info.
 
     Args:
@@ -36,7 +36,7 @@ def execute_task(task: Task) -> TaskResult:
 
     try:
         # Import here to avoid issues with multiprocessing
-        from SA_generation import run_sa
+        from sa_generation import run_sa
 
         # Call run_sa with all parameters from task
         initial_crossings, final_crossings, best_ops = run_sa(

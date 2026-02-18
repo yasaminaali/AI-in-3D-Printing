@@ -45,7 +45,7 @@ print = functools.partial(print, flush=True)
 
 from operations import HamiltonianSTL
 from numba_ops import FastHamiltonianSTL
-from Zones import zones_stripes, zones_voronoi
+from zones import zones_stripes, zones_voronoi
 
 Point = Tuple[int, int]
 
@@ -706,7 +706,7 @@ def run_ga_sequences_dataset_init(
     generations: int = 50,
     tourn_k: int = 3,
     genome_len: int = GENOME_LEN,
-    # zone params (MUST match SA_generation.py used when dataset created)
+    # zone params (MUST match sa_generation.py used when dataset created)
     num_islands: int = 3,
     island_size: int = 8,
     allow_touch: bool = False,
@@ -942,7 +942,7 @@ def run_ga_sequences_dataset_init(
 # Main
 # ============================================================
 if __name__ == "__main__":
-    # SA dataset path produced by SA_generation.py:
+    # SA dataset path produced by sa_generation.py:
     dataset_jsonl = os.path.join("Dataset", "Dataset.jsonl")
 
     run_ga_sequences_dataset_init(

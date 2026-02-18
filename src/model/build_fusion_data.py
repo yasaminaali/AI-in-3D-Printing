@@ -33,8 +33,8 @@ Output: fusion_data.pt with grouped storage:
   }
 
 Usage:
-    PYTHONPATH=$(pwd):$PYTHONPATH python FusionModel/fusion/build_fusion_data.py
-    PYTHONPATH=$(pwd):$PYTHONPATH python FusionModel/fusion/build_fusion_data.py --input combined_dataset.jsonl
+    PYTHONPATH=$(pwd)/src:$PYTHONPATH python src/model/build_fusion_data.py
+    PYTHONPATH=$(pwd)/src:$PYTHONPATH python src/model/build_fusion_data.py --input combined_dataset.jsonl
 """
 
 import json
@@ -46,7 +46,7 @@ from pathlib import Path
 from multiprocessing import Pool, cpu_count
 from collections import deque, defaultdict, Counter
 
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from rich.console import Console
 from rich.progress import (
@@ -269,7 +269,7 @@ def _compute_layer_index(y, x, grid_h, grid_w):
 def main():
     parser = argparse.ArgumentParser(description='Build Fusion training data v2')
     parser.add_argument('--input', default='datasets/final_dataset.jsonl')
-    parser.add_argument('--output', default='FusionModel/fusion/fusion_data.pt')
+    parser.add_argument('--output', default='checkpoints/fusion_data.pt')
     parser.add_argument('--workers', type=int, default=0, help='0 = 30%% of cores')
     parser.add_argument('--limit', type=int, default=0, help='Process only first N trajectories (0 = all)')
     parser.add_argument('--max_oversample', type=int, default=4, help='Max oversampling factor for inner layers')

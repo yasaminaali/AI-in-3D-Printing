@@ -1,5 +1,5 @@
 """
-SA_generation_gpu.py - GPU-Accelerated Simulated Annealing for Zone Crossing Minimization
+sa_generation_gpu.py - GPU-Accelerated Simulated Annealing for Zone Crossing Minimization
 
 Optimized for NVIDIA H100 GPUs. Uses CUDA tensors and matrix multiplications to accelerate:
 1. Zone crossing computation - element-wise tensor multiply + sum
@@ -8,7 +8,7 @@ Optimized for NVIDIA H100 GPUs. Uses CUDA tensors and matrix multiplications to 
 4. Multi-GPU parallel execution - torch.multiprocessing across multiple GPUs
 5. Path validation - Numba JIT-compiled BFS (~60-100x faster than Python)
 
-Input/output format is identical to SA_generation.py.
+Input/output format is identical to sa_generation.py.
 
 Dependencies: torch (with CUDA), numba, numpy, operations.py, Zones.py
 """
@@ -25,7 +25,7 @@ import torch
 
 from operations import HamiltonianSTL
 from numba_ops import FastHamiltonianSTL, fast_validate_path
-from Zones import zones_stripes, zones_voronoi
+from zones import zones_stripes, zones_voronoi
 
 Point = Tuple[int, int]
 
@@ -716,7 +716,7 @@ def run_sa(
     device: Optional[torch.device] = None,
 ) -> Tuple[int, int, List[Dict[str, Any]]]:
     """
-    GPU-accelerated SA runner. Same interface as SA_generation.run_sa.
+    GPU-accelerated SA runner. Same interface as sa_generation.run_sa.
     Extra parameter: device (torch.device) for GPU selection.
     """
     random.seed(seed)

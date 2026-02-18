@@ -31,8 +31,8 @@ Current model limitations (data-dependent, NOT architectural):
   - Once retrained with more data, the model should handle all grid sizes
 
 Usage:
-    PYTHONPATH=$(pwd):$PYTHONPATH python FusionModel/fusion/inference_fusion.py \\
-        --checkpoint FusionModel/nn_checkpoints/fusion/best.pt
+    PYTHONPATH=$(pwd)/src:$PYTHONPATH python src/model/inference_fusion.py \\
+        --checkpoint checkpoints/best.pt
 """
 
 import torch
@@ -50,7 +50,7 @@ from pathlib import Path
 from collections import deque, defaultdict
 
 sys.path.insert(0, str(Path(__file__).parent))
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from operations import HamiltonianSTL
 from fusion_model import FusionNet, VARIANT_REV, VARIANT_MAP, NUM_ACTIONS
@@ -205,7 +205,7 @@ def _sa_optimize(h, zones_np, grid_w, grid_h, target_upper, max_steps=3000,
     Stops early on target reached, stagnation, or time limit.
     Time limit starts AFTER move pool generation.
     """
-    from SA_generation import (
+    from sa_generation import (
         refresh_move_pool, apply_move,
         _snapshot_edges_for_move, _restore_edges_snapshot,
         dynamic_temperature,
@@ -980,7 +980,7 @@ def evaluate_all_patterns(
     n_random=10,
     device=torch.device('cuda'),
     visualize=False,
-    vis_dir='nn_checkpoints/fusion/vis',
+    vis_dir='checkpoints/vis',
 ):
     console.print(Panel.fit(
         "[bold cyan]FusionNet v5 — Constructive + Model-Only (No SA)[/bold cyan]\n"
@@ -1358,7 +1358,7 @@ def _display_all_pattern_results(results):
 
 def main():
     parser = argparse.ArgumentParser(description='FusionNet v5 Inference — Constructive + Model-Only')
-    parser.add_argument('--checkpoint', default='FusionModel/nn_checkpoints/fusion/best.pt')
+    parser.add_argument('--checkpoint', default='checkpoints/best.pt')
     parser.add_argument('--jsonl', default='datasets/final_dataset.jsonl')
     parser.add_argument('--n_per_pattern', type=int, default=25)
     parser.add_argument('--max_steps', type=int, default=200,
@@ -1370,7 +1370,7 @@ def main():
     parser.add_argument('--device', default='cuda')
     parser.add_argument('--verbose', action='store_true')
     parser.add_argument('--visualize', action='store_true')
-    parser.add_argument('--vis_dir', default='nn_checkpoints/fusion/vis')
+    parser.add_argument('--vis_dir', default='checkpoints/vis')
 
     args = parser.parse_args()
     device = torch.device(args.device if torch.cuda.is_available() else 'cpu')

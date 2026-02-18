@@ -14,14 +14,14 @@ if [ ! -f "nn_venv/bin/python" ]; then
 fi
 
 source nn_venv/bin/activate
-export PYTHONPATH=$(pwd):$PYTHONPATH
+export PYTHONPATH=$(pwd)/src:$PYTHONPATH
 
 # Find all checkpoints
 echo "Scanning for checkpoints..."
-CHECKPOINTS=$(ls nn_checkpoints/*.pt 2>/dev/null)
+CHECKPOINTS=$(ls checkpoints/*.pt 2>/dev/null)
 
 if [ -z "$CHECKPOINTS" ]; then
-    echo "ERROR: No checkpoints found in nn_checkpoints/"
+    echo "ERROR: No checkpoints found in checkpoints/"
     exit 1
 fi
 

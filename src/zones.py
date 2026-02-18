@@ -18,7 +18,7 @@ Available Patterns:
     - zones_voronoi: Irregular regions based on random seed points
 
 Usage:
-    from Zones import zones_stripes, zones_voronoi
+    from zones import zones_stripes, zones_voronoi
 
     # Create 3 vertical stripes on a 32x32 grid
     zones = zones_stripes(32, 32, direction="v", k=3)

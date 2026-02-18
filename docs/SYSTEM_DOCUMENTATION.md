@@ -175,8 +175,8 @@ The dataset builder (`build_fusion_data.py`) replays these trajectories to creat
 For the model to work reliably at all grid sizes:
 - Generate **~1,000+ SA trajectories** per grid size per pattern for voronoi and islands
 - Priority sizes: 50x50, 60x60, 100x100 (currently under-represented)
-- Rebuild dataset: `python FusionModel/fusion/build_fusion_data.py`
-- Retrain: `sbatch sbatch_train_fusion.sh`
+- Rebuild dataset: `python src/model/build_fusion_data.py`
+- Retrain: `sbatch scripts/sbatch_train_fusion.sh`
 
 The architecture, loss function, and inference code are all ready. Only data volume is the bottleneck.
 
@@ -382,13 +382,13 @@ Input: Zone grid + grid dimensions + zone pattern
 
 | File | Purpose |
 |------|---------|
-| `FusionModel/fusion/inference_fusion.py` | Main inference: model-guided strategy, alternating loop, SA perturbation, final sweep |
-| `FusionModel/fusion/constructive.py` | Constructive strategy for left_right/stripes |
-| `FusionModel/fusion/fusion_model.py` | FusionNet architecture (ResU-Net + GRU + FiLM) |
-| `FusionModel/fusion/fusion_dataset.py` | Training dataset loading and 9-channel encoding |
-| `FusionModel/fusion/train_fusion.py` | DDP training script (4x H100) |
-| `FusionModel/fusion/build_fusion_data.py` | Builds compact .pt dataset from JSONL trajectories |
-| `SA_generation.py` | Simulated Annealing trajectory generator |
-| `sbatch_train_fusion.sh` | SLURM script for training |
-| `sbatch_inference_fusion.sh` | SLURM script for inference evaluation |
-| `FusionModel/CHANGELOG.md` | Detailed change history |
+| `src/model/inference_fusion.py` | Main inference: model-guided strategy, alternating loop, SA perturbation, final sweep |
+| `src/model/constructive.py` | Constructive strategy for left_right/stripes |
+| `src/model/fusion_model.py` | FusionNet architecture (ResU-Net + GRU + FiLM) |
+| `src/model/fusion_dataset.py` | Training dataset loading and 9-channel encoding |
+| `src/model/train_fusion.py` | DDP training script (4x H100) |
+| `src/model/build_fusion_data.py` | Builds compact .pt dataset from JSONL trajectories |
+| `src/sa_generation.py` | Simulated Annealing trajectory generator |
+| `scripts/sbatch_train_fusion.sh` | SLURM script for training |
+| `scripts/sbatch_inference_fusion.sh` | SLURM script for inference evaluation |
+| `docs/CHANGELOG.md` | Detailed change history |

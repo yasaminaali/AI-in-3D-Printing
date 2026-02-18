@@ -1,43 +1,52 @@
-# Virtual environments
-nn_venv/
-.venv/
-.venv*/
-CCAI/
-# Python cache
+# Python
 __pycache__/
 *.pyc
 *.pyo
 
-# Large model checkpoints and training data
-FusionModel/nn_checkpoints/
-FusionModel/fusion/fusion_data.pt
-*.pt
+# Virtual environments
+nn_venv/
+sa_gpu_env/
+.venv/
+.venv*/
 
-# Large dataset files
-datasets/combined_dataset.jsonl
-Dataset*.jsonl
-
-# Zip archives
-*.zip
-
-# OS files
-.DS_Store
-Thumbs.db
-
-# IDE
+# IDE / tools
 .idea/
 .vscode/
 .opencode/
+.claude/
 *.swp
-*.jsonl
-# Temp files
+datasets/
+# OS
+.DS_Store
+Thumbs.db
+nul
+
+# Model checkpoints & preprocessed data
+checkpoints/
+FusionModel/
+*.pt
+
+# Datasets (large files)
+datasets/*.jsonl
+Dataset*.jsonl
+
+# Pipeline output
+output/
+
+# SLURM output
+*.out
+*.err
+
+# Archives
+*.zip
+
+# Temp
 *.log
 *.tmp
-nul
-datasets/*.jsonl
-# Results / output
-*.json
-!config/*.yaml
+bash.exe.stackdump
 
-# Local config
+# Paper source (managed separately)
+paper/
+
+# Personal configs
 config/ansh.yaml

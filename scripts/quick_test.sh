@@ -13,15 +13,15 @@ if [ ! -f "nn_venv/bin/python" ]; then
 fi
 
 source nn_venv/bin/activate
-export PYTHONPATH=$(pwd):$PYTHONPATH
+export PYTHONPATH=$(pwd)/src:$PYTHONPATH
 
 # Check model
-if [ ! -f "nn_checkpoints/best_model.pt" ]; then
-    echo "ERROR: No model found at nn_checkpoints/best_model.pt"
+if [ ! -f "checkpoints/best_model.pt" ]; then
+    echo "ERROR: No model found at checkpoints/best_model.pt"
     exit 1
 fi
 
-echo "Testing model: nn_checkpoints/best_model.pt"
+echo "Testing model: checkpoints/best_model.pt"
 echo ""
 
 # Run quick test
@@ -38,7 +38,7 @@ print('Loading model...')
 with open('model/config.yaml', 'r') as f:
     config = yaml.safe_load(f)
 
-checkpoint = torch.load('nn_checkpoints/best_model.pt', map_location='cpu')
+checkpoint = torch.load('checkpoints/best_model.pt', map_location='cpu')
 model = CNNRNNHamiltonian(config)
 model.load_state_dict(checkpoint['model_state_dict'])
 model.eval()

@@ -9,10 +9,10 @@ Change 18: Full training configuration update:
 - Staged training support (smoke test, arch validation, short run, full)
 
 Usage (single GPU):
-    PYTHONPATH=$(pwd):$PYTHONPATH python FusionModel/fusion/train_fusion.py
+    PYTHONPATH=$(pwd)/src:$PYTHONPATH python src/model/train_fusion.py
 
 Usage (4x GPU DDP via torchrun):
-    PYTHONPATH=$(pwd):$PYTHONPATH torchrun --nproc_per_node=4 FusionModel/fusion/train_fusion.py
+    PYTHONPATH=$(pwd)/src:$PYTHONPATH torchrun --nproc_per_node=4 src/model/train_fusion.py
 """
 
 import os
@@ -30,7 +30,7 @@ from torch.utils.data.distributed import DistributedSampler
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from fusion_model import FusionNet, compute_ranking_loss, count_parameters
 from fusion_dataset import create_train_val_split, build_9ch_batch_gpu
@@ -573,8 +573,8 @@ def train(args):
 
 def main():
     parser = argparse.ArgumentParser(description='FusionNet v2 Training')
-    parser.add_argument('--data_path', type=str, default='FusionModel/fusion/fusion_data.pt')
-    parser.add_argument('--checkpoint_dir', type=str, default='FusionModel/nn_checkpoints/fusion')
+    parser.add_argument('--data_path', type=str, default='checkpoints/fusion_data.pt')
+    parser.add_argument('--checkpoint_dir', type=str, default='checkpoints')
     parser.add_argument('--resume', type=str, default=None, help='Resume from checkpoint')
     parser.add_argument('--epochs', type=int, default=200)
     parser.add_argument('--batch_size', type=int, default=64, help='Per-GPU batch size')

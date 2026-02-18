@@ -16,7 +16,7 @@ Available Scripts:
    Run inference on a specific problem
    Usage: ./run_inference.sh --zone-pattern left_right
    Options:
-     --checkpoint PATH   Model path (default: nn_checkpoints/best_model.pt)
+     --checkpoint PATH   Model path (default: checkpoints/best_model.pt)
      --grid-W N         Grid width (default: 30)
      --grid-H N         Grid height (default: 30)
      --zone-pattern P   Pattern: left_right, stripes, voronoi, checkerboard
@@ -63,7 +63,7 @@ Examples:
 ./run_inference.sh --zone-pattern checkerboard
 
 # Use a specific checkpoint:
-./run_inference.sh --checkpoint nn_checkpoints/checkpoint_epoch_40.pt
+./run_inference.sh --checkpoint checkpoints/checkpoint_epoch_40.pt
 
 # Different grid size (if supported):
 ./run_inference.sh --grid-W 50 --grid-H 50 --zone-pattern left_right

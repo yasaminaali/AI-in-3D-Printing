@@ -5,10 +5,10 @@
 #=============================================================
 #
 # Prerequisites:
-#   1. Trained model checkpoint in FusionModel/nn_checkpoints/fusion/
+#   1. Trained model checkpoint in checkpoints/
 #   2. Test dataset JSONL file
 #
-# Submit with:   sbatch sbatch_inference_fusion.sh
+# Submit with:   sbatch scripts/sbatch_inference_fusion.sh
 # Check status:  squeue -u $USER
 # Cancel job:    scancel <job_id>
 # View output:   tail -f fusion_inference_%j.out
@@ -72,7 +72,7 @@ fi
 # --- Configuration ---
 # Override via environment variables:
 #   CHECKPOINT=/path/to/best.pt  TEST_JSONL=/path/to/test.jsonl  N_PER_PATTERN=25
-CHECKPOINT="${CHECKPOINT:-FusionModel/nn_checkpoints/fusion/best.pt}"
+CHECKPOINT="${CHECKPOINT:-checkpoints/best.pt}"
 TEST_JSONL="${TEST_JSONL:-datasets/final_dataset.jsonl}"
 N_PER_PATTERN="${N_PER_PATTERN:-25}"
 
@@ -86,7 +86,7 @@ echo ""
 if [ ! -f "$CHECKPOINT" ]; then
     echo "ERROR: Checkpoint not found at $CHECKPOINT"
     echo "Available checkpoints:"
-    ls -lht FusionModel/nn_checkpoints/fusion/*.pt 2>/dev/null | head -5
+    ls -lht checkpoints/*.pt 2>/dev/null | head -5
     exit 1
 fi
 
@@ -99,12 +99,12 @@ echo "Starting inference evaluation..."
 echo ""
 
 # --- Run inference ---
-PYTHONPATH="$(pwd):$PYTHONPATH" python3 FusionModel/fusion/inference_fusion.py \
+PYTHONPATH="$(pwd)/src:$PYTHONPATH" python3 src/model/inference_fusion.py \
     --checkpoint "$CHECKPOINT" \
     --jsonl "$TEST_JSONL" \
     --n_per_pattern "$N_PER_PATTERN" \
     --visualize \
-    --vis_dir "FusionModel/nn_checkpoints/fusion/vis"
+    --vis_dir "checkpoints/vis"
 
 EXIT_CODE=$?
 
@@ -112,8 +112,8 @@ echo ""
 echo "=============================================="
 echo "  Inference finished at $(date)"
 echo "  Exit code: $EXIT_CODE"
-echo "  Results: FusionModel/nn_checkpoints/fusion/inference_results.json"
-echo "  Visualizations: FusionModel/nn_checkpoints/fusion/vis/"
+echo "  Results: checkpoints/inference_results.json"
+echo "  Visualizations: checkpoints/vis/"
 echo "=============================================="
 
 exit $EXIT_CODE

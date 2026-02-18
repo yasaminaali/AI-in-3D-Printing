@@ -18,7 +18,7 @@ fi
 source nn_venv/bin/activate
 
 # Set PYTHONPATH
-export PYTHONPATH=$(pwd):$PYTHONPATH
+export PYTHONPATH=$(pwd)/src:$PYTHONPATH
 
 # Check if preprocessed data exists
 if [ -f "nn_data/train_all.jsonl" ]; then
@@ -49,11 +49,11 @@ else
 fi
 
 # Check for checkpoint to resume
-if [ -f "nn_checkpoints/best_model.pt" ]; then
-    echo "[OK] Found checkpoint: nn_checkpoints/best_model.pt"
+if [ -f "checkpoints/best_model.pt" ]; then
+    echo "[OK] Found checkpoint: checkpoints/best_model.pt"
     python -c "
 import torch
-checkpoint = torch.load('nn_checkpoints/best_model.pt', map_location='cpu')
+checkpoint = torch.load('checkpoints/best_model.pt', map_location='cpu')
 print(f'Resuming from epoch: {checkpoint[\"epoch\"]}')
 print(f'Best val loss: {checkpoint[\"best_val_loss\"]:.4f}')
 "
@@ -92,4 +92,4 @@ fi
 
 echo ""
 echo "[DONE] Training complete!"
-echo "Model saved to: nn_checkpoints/best_model.pt"
+echo "Model saved to: checkpoints/best_model.pt"

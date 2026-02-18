@@ -5,9 +5,9 @@
 #=============================================================
 #
 # First time setup (run ONCE on login node before submitting):
-#   bash setup_env.sh
+#   bash scripts/setup_env.sh
 #
-# Submit with:   sbatch sbatch_kazi_ga_gpu.sh
+# Submit with:   sbatch scripts/sbatch_kazi_ga_gpu.sh
 # Check status:  squeue -u $USER
 # Cancel job:    scancel <job_id>
 # View output:   tail -f ga_gen_kazi_%j.out

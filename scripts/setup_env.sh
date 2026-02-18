@@ -28,4 +28,4 @@ python3 -c "import numba; print(f'Numba {numba.__version__}')"
 
 echo ""
 echo "Setup complete! Now submit your job with:"
-echo "  sbatch sbatch_kazi_gpu.sh"
+echo "  sbatch scripts/sbatch_kazi_gpu.sh"

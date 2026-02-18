@@ -79,7 +79,7 @@ def gpu_worker(
         print(f"[GPU {gpu_id}] ERROR: Cannot access cuda:{device_id}: {e}", flush=True)
         return
 
-    from SA_generation_gpu import run_sa
+    from sa_generation_gpu import run_sa
 
     completed = 0
     while True:
