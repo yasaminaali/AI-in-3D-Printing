@@ -2,16 +2,15 @@
 import sys
 from pathlib import Path
 
-_this_dir = str(Path(__file__).resolve().parent)
-if _this_dir not in sys.path:
-    sys.path.insert(0, _this_dir)
+_this_dir = Path(__file__).resolve().parent
+_ablations_dir = _this_dir.parent
+_model_dir = _ablations_dir.parent
+_src_dir = _model_dir.parent
+for p in [str(_this_dir), str(_ablations_dir), str(_model_dir), str(_src_dir)]:
+    if p not in sys.path:
+        sys.path.insert(0, p)
 
-_ablations_dir = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(_ablations_dir))
-sys.path.insert(0, str(_ablations_dir.parent))
-sys.path.insert(0, str(_ablations_dir.parent.parent))
-
-from model import CNNRNN
+from cnn_rnn_model import CNNRNN
 from inference_common import run_ablation_inference
 
 if __name__ == '__main__':
