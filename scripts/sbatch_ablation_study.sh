@@ -108,17 +108,7 @@ echo "=== Training ${NAME} ==="
 echo "  Epochs: \$EPOCHS | Batch: \$BATCH_SIZE | LR: \$LR | Patience: \$PATIENCE"
 echo ""
 
-torchrun \\
-    --nproc_per_node=4 \\
-    --master_port=${PORT} \\
-    src/model/ablations/${VARIANT}/train.py \\
-    --data_path "\$DATA_PT" \\
-    --checkpoint_dir "\$CKPT_DIR" \\
-    --epochs "\$EPOCHS" \\
-    --batch_size "\$BATCH_SIZE" \\
-    --learning_rate "\$LR" \\
-    --patience "\$PATIENCE" \\
-    --num_workers 8
+torchrun --nproc_per_node=4 --master_port=${PORT} src/model/ablations/${VARIANT}/train.py --data_path "\$DATA_PT" --checkpoint_dir "\$CKPT_DIR" --epochs "\$EPOCHS" --batch_size "\$BATCH_SIZE" --learning_rate "\$LR" --patience "\$PATIENCE" --num_workers 8
 
 TRAIN_EXIT=\$?
 echo "Training exit code: \$TRAIN_EXIT"
@@ -132,12 +122,7 @@ echo ""
 echo "=== Inference ${NAME} ==="
 echo ""
 
-python3 src/model/ablations/${VARIANT}/inference.py \\
-    --checkpoint "\$CKPT_DIR/best.pt" \\
-    --jsonl "\$TEST_JSONL" \\
-    --n_per_pattern "\$N_PER_PATTERN" \\
-    --output_dir "\$CKPT_DIR" \\
-    --visualize
+python3 src/model/ablations/${VARIANT}/inference.py --checkpoint "\$CKPT_DIR/best.pt" --jsonl "\$TEST_JSONL" --n_per_pattern "\$N_PER_PATTERN" --output_dir "\$CKPT_DIR" --visualize
 
 echo ""
 echo "${NAME} completed at \$(date)"
