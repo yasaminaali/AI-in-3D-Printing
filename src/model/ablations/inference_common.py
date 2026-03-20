@@ -3,6 +3,10 @@ Shared inference wrapper for ablation study models.
 
 Loads a model checkpoint, runs the same inference pipeline as inference_fusion.py,
 and saves results to the model's output directory.
+
+Supports two modes:
+  - Default: evaluate_all_patterns (constructive + model-guided)
+  - --comparison: evaluate_comparison (model+SA on voronoi/islands only)
 """
 
 import sys
@@ -30,7 +34,7 @@ def run_ablation_inference(model_class, model_name, default_output_dir,
     """
     Run inference evaluation for an ablation model.
 
-    Uses the same model-guided inference pipeline from inference_fusion.py.
+    Uses evaluate_all_patterns by default, or evaluate_comparison with --comparison.
     """
     parser = argparse.ArgumentParser(description=f'{model_name} Inference')
     parser.add_argument('--checkpoint', type=str,
@@ -39,6 +43,8 @@ def run_ablation_inference(model_class, model_name, default_output_dir,
     parser.add_argument('--n_per_pattern', type=int, default=25)
     parser.add_argument('--output_dir', type=str, default=default_output_dir)
     parser.add_argument('--visualize', action='store_true')
+    parser.add_argument('--comparison', action='store_true',
+                        help='Run model+SA comparison inference (voronoi/islands only)')
     parser.add_argument('--in_channels', type=int, default=9)
     parser.add_argument('--base_features', type=int, default=48)
     parser.add_argument('--max_grid_size', type=int, default=128)
@@ -87,35 +93,66 @@ def run_ablation_inference(model_class, model_name, default_output_dir,
         console.print(f"  Val loss: {vm.get('loss', '?'):.4f}")
         console.print(f"  Recall@5: {vm.get('recall_at_5', '?'):.4f}")
 
-    # Import inference pipeline — done here to avoid circular imports at module level
-    from inference_fusion import evaluate_all_patterns, _display_all_pattern_results
-
     os.makedirs(args.output_dir, exist_ok=True)
-    vis_dir = os.path.join(args.output_dir, 'vis') if args.visualize else None
-    if vis_dir:
-        os.makedirs(vis_dir, exist_ok=True)
 
-    results = evaluate_all_patterns(
-        model=model,
-        jsonl_path=args.jsonl,
-        n_per_pattern=args.n_per_pattern,
-        device=device,
-        visualize=args.visualize,
-        vis_dir=vis_dir if vis_dir else os.path.join(args.output_dir, 'vis'),
-    )
+    if args.comparison:
+        # Model+SA comparison inference (voronoi/islands)
+        from inference_comparison import evaluate_comparison
+
+        mode_str = "Comparison (Model+SA)"
+        console.print(f"  Mode: [bold yellow]{mode_str}[/bold yellow]")
+
+        results = evaluate_comparison(
+            model=model,
+            jsonl_path=args.jsonl,
+            n_per_pattern=args.n_per_pattern,
+            device=device,
+            visualize=args.visualize,
+            output_dir=args.output_dir,
+        )
+
+        results_path = os.path.join(args.output_dir, 'comparison_results.json')
+    else:
+        # Standard inference (constructive + model-guided)
+        from inference_fusion import evaluate_all_patterns
+
+        mode_str = "Standard (Constructive + Model)"
+        console.print(f"  Mode: [bold cyan]{mode_str}[/bold cyan]")
+
+        vis_dir = os.path.join(args.output_dir, 'vis') if args.visualize else None
+        if vis_dir:
+            os.makedirs(vis_dir, exist_ok=True)
+
+        results = evaluate_all_patterns(
+            model=model,
+            jsonl_path=args.jsonl,
+            n_per_pattern=args.n_per_pattern,
+            device=device,
+            visualize=args.visualize,
+            vis_dir=vis_dir if vis_dir else os.path.join(args.output_dir, 'vis'),
+        )
+
+        results_path = os.path.join(args.output_dir, 'inference_results.json')
 
     # Save results
-    results_path = os.path.join(args.output_dir, 'inference_results.json')
+    non_serializable = {'final_h', 'boundary_details'}
     serializable = []
     for r in results:
         sr = {k: v for k, v in r.items()
-              if not isinstance(v, (torch.Tensor,)) and k not in
-              ('final_h', 'boundary_details', 'sequence', 'crossings_history')}
+              if not isinstance(v, (torch.Tensor,)) and k not in non_serializable}
+        if 'crossings_history' in r:
+            sr['crossings_history'] = r['crossings_history']
+        if 'sequence' in r:
+            sr['sequence'] = [
+                {'kind': op['kind'], 'x': op['x'], 'y': op['y'],
+                 'variant': op['variant']}
+                for op in r.get('sequence', [])
+            ]
         serializable.append(sr)
 
     with open(results_path, 'w') as f:
         json.dump(serializable, f, indent=2, default=str)
 
-    console.print(f"\n[bold green]{model_name} inference complete.[/bold green]")
+    console.print(f"\n[bold green]{model_name} {mode_str} complete.[/bold green]")
     console.print(f"  Results: {results_path}")
     console.print(f"  Samples: {len(serializable)}")

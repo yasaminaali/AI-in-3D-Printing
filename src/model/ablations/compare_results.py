@@ -131,7 +131,13 @@ def main():
             base_dir = os.path.join(args.ablation_dir, variant_id)
 
         train_log = load_training_log(os.path.join(base_dir, 'training_log.csv'))
-        inf_results = load_inference_results(os.path.join(base_dir, 'inference_results.json'))
+        # Try comparison_results.json first, fall back to inference_results.json
+        comp_path = os.path.join(base_dir, 'comparison_results.json')
+        inf_path = os.path.join(base_dir, 'inference_results.json')
+        if variant_id == '__fusionnet__':
+            # FusionNet comparison results are in checkpoints/comparison/
+            comp_path = os.path.join(base_dir, 'comparison', 'comparison_results.json')
+        inf_results = load_inference_results(comp_path) or load_inference_results(inf_path)
         n_params = get_param_count(os.path.join(base_dir, 'best.pt'))
 
         entry = {
