@@ -1,0 +1,19 @@
+# 100K Dataset Generation: 60x60 grids, voronoi + islands
+# 1250 seeds × 4 configs × 2 patterns = 10,000 trajectories
+machine_id: gen100k_60x60_b
+num_workers: 64
+output_dir: output/gen100k
+
+assignments:
+  - grid: [60, 60]
+    patterns:
+      - voronoi
+      - islands
+    sa_configs:
+      - short
+      - medium
+      - long
+      - extra_long
+    seeds:
+      voronoi: 1250
+      islands: 1250

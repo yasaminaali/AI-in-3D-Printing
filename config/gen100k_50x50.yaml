@@ -1,0 +1,23 @@
+# 100K Dataset Generation: 50x50 grids, all 4 patterns
+# 1250 seeds × 4 configs × 4 patterns = 20,000 trajectories
+machine_id: gen100k_50x50
+num_workers: 64
+output_dir: output/gen100k
+
+assignments:
+  - grid: [50, 50]
+    patterns:
+      - left_right
+      - stripes
+      - islands
+      - voronoi
+    sa_configs:
+      - short
+      - medium
+      - long
+      - extra_long
+    seeds:
+      left_right: 1250
+      stripes: 1250
+      islands: 1250
+      voronoi: 1250

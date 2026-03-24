@@ -1,0 +1,17 @@
+# 100K Dataset Generation: 80x80 voronoi
+# 1250 seeds × 4 configs = 5,000 trajectories
+machine_id: gen100k_80x80_vor
+num_workers: 64
+output_dir: output/gen100k
+
+assignments:
+  - grid: [80, 80]
+    patterns:
+      - voronoi
+    sa_configs:
+      - short
+      - medium
+      - long
+      - extra_long
+    seeds:
+      voronoi: 1250
