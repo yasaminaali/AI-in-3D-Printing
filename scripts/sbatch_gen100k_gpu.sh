@@ -108,7 +108,7 @@ python3 -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPUs: {torc
 echo "Starting SA generation: ${CFG}"
 echo ""
 
-python3 src/run_pipeline_gpu.py ${CFG} --gpus 4 --workers-per-gpu 16 --config-dir config
+python3 src/run_pipeline_gpu.py ${CFG} --gpus 4 --workers-per-gpu 16 --config-dir "\$(pwd)/config"
 
 echo ""
 echo "${CFG} completed at \$(date)"

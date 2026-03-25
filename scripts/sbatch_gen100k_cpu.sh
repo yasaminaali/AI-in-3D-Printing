@@ -106,7 +106,7 @@ export PYTHONPATH="\$(pwd)/src:\$PYTHONPATH"
 echo "Starting SA generation: ${CFG}"
 echo ""
 
-python3 src/run_pipeline.py ${CFG} --config-dir config --skip-venv-check
+python3 src/run_pipeline.py ${CFG} --config-dir "\$(pwd)/config" --skip-venv-check
 
 echo ""
 echo "${CFG} completed at \$(date)"
